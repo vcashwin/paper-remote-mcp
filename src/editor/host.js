@@ -94,99 +94,99 @@ function webmcpStub() {
   }
 }
 
-function mandatoryInstallScript() {
-  const mockUrlPart = "/meter/balance";
-  window.__apiMockerEnabled = true;
-  const serverStartTime = (window.__serverStartTime ??=
-    Date.now() + 5 * 60 * 1000);
-  const clientStartTime = (window.__clientStartTime ??= Date.now());
-  window.__apiMocker ??= {};
+// function mandatoryInstallScript() {
+//   const mockUrlPart = "/meter/balance";
+//   window.__apiMockerEnabled = true;
+//   const serverStartTime = (window.__serverStartTime ??=
+//     Date.now() + 5 * 60 * 1000);
+//   const clientStartTime = (window.__clientStartTime ??= Date.now());
+//   window.__apiMocker ??= {};
 
-  const getMockBody = () => ({
-    serverClock: serverStartTime + (Date.now() - clientStartTime),
-    manaUsed: 0,
-    manaCap: 20,
-    mcpUsed: 1,
-    mcpCap: 10000,
-  });
-  /** @param {unknown} url */
-  const shouldMock = (url) =>
-    window.__apiMockerEnabled && String(url || "").includes(mockUrlPart);
-  /** @param {string} type @param {unknown} url */
-  const logMock = (type, url) => console.info(`[${type}] MOCKED:`, url);
+//   const getMockBody = () => ({
+//     serverClock: serverStartTime + (Date.now() - clientStartTime),
+//     manaUsed: 0,
+//     manaCap: 20,
+//     mcpUsed: 1,
+//     mcpCap: 10000,
+//   });
+//   /** @param {unknown} url */
+//   const shouldMock = (url) =>
+//     window.__apiMockerEnabled && String(url || "").includes(mockUrlPart);
+//   /** @param {string} type @param {unknown} url */
+//   const logMock = (type, url) => console.info(`[${type}] MOCKED:`, url);
 
-  if (!window.__apiMocker.originalFetch && window.fetch) {
-    window.__apiMocker.originalFetch = window.fetch.bind(window);
-    window.fetch = async (...args) => {
-      const input = args[0];
-      const url =
-        typeof input === "string"
-          ? input
-          : input instanceof Request
-            ? input.url
-            : input instanceof URL
-              ? input.href
-              : "";
-      if (shouldMock(url)) {
-        logMock("fetch", url);
-        return new Response(JSON.stringify(getMockBody()), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      return window.__apiMocker.originalFetch(...args);
-    };
-  }
+//   if (!window.__apiMocker.originalFetch && window.fetch) {
+//     window.__apiMocker.originalFetch = window.fetch.bind(window);
+//     window.fetch = async (...args) => {
+//       const input = args[0];
+//       const url =
+//         typeof input === "string"
+//           ? input
+//           : input instanceof Request
+//             ? input.url
+//             : input instanceof URL
+//               ? input.href
+//               : "";
+//       if (shouldMock(url)) {
+//         logMock("fetch", url);
+//         return new Response(JSON.stringify(getMockBody()), {
+//           status: 200,
+//           headers: { "Content-Type": "application/json" },
+//         });
+//       }
+//       return window.__apiMocker.originalFetch(...args);
+//     };
+//   }
 
-  if (!window.__apiMocker.originalXHROpen) {
-    window.__apiMocker.originalXHROpen = XMLHttpRequest.prototype.open;
-    window.__apiMocker.originalXHRSend = XMLHttpRequest.prototype.send;
-    XMLHttpRequest.prototype.open = function (
-      /** @type {string} */ method,
-      /** @type {string | URL} */ url,
-    ) {
-      this.__apiMockerUrl = url;
-      return window.__apiMocker.originalXHROpen.apply(this, arguments);
-    };
-    XMLHttpRequest.prototype.send = function () {
-      if (shouldMock(this.__apiMockerUrl)) {
-        logMock("xhr", this.__apiMockerUrl);
-        const body = JSON.stringify(getMockBody());
-        Object.defineProperties(this, {
-          readyState: { configurable: true, value: 4 },
-          status: { configurable: true, value: 200 },
-          responseText: { configurable: true, value: body },
-          response: { configurable: true, value: body },
-        });
-        setTimeout(() => {
-          this.dispatchEvent(new Event("readystatechange"));
-          this.dispatchEvent(new Event("load"));
-          this.dispatchEvent(new Event("loadend"));
-        }, 0);
-        return;
-      }
-      return window.__apiMocker.originalXHRSend.apply(this, arguments);
-    };
-  }
+//   if (!window.__apiMocker.originalXHROpen) {
+//     window.__apiMocker.originalXHROpen = XMLHttpRequest.prototype.open;
+//     window.__apiMocker.originalXHRSend = XMLHttpRequest.prototype.send;
+//     XMLHttpRequest.prototype.open = function (
+//       /** @type {string} */ method,
+//       /** @type {string | URL} */ url,
+//     ) {
+//       this.__apiMockerUrl = url;
+//       return window.__apiMocker.originalXHROpen.apply(this, arguments);
+//     };
+//     XMLHttpRequest.prototype.send = function () {
+//       if (shouldMock(this.__apiMockerUrl)) {
+//         logMock("xhr", this.__apiMockerUrl);
+//         const body = JSON.stringify(getMockBody());
+//         Object.defineProperties(this, {
+//           readyState: { configurable: true, value: 4 },
+//           status: { configurable: true, value: 200 },
+//           responseText: { configurable: true, value: body },
+//           response: { configurable: true, value: body },
+//         });
+//         setTimeout(() => {
+//           this.dispatchEvent(new Event("readystatechange"));
+//           this.dispatchEvent(new Event("load"));
+//           this.dispatchEvent(new Event("loadend"));
+//         }, 0);
+//         return;
+//       }
+//       return window.__apiMocker.originalXHRSend.apply(this, arguments);
+//     };
+//   }
 
-  window.__apiMocker.enable = () => {
-    window.__apiMockerEnabled = true;
-  };
-  window.__apiMocker.disable = () => {
-    window.__apiMockerEnabled = false;
-  };
-  window.__apiMocker.reset = () => {
-    if (window.__apiMocker.originalFetch)
-      window.fetch = window.__apiMocker.originalFetch;
-    if (window.__apiMocker.originalXHROpen) {
-      XMLHttpRequest.prototype.open = window.__apiMocker.originalXHROpen;
-      XMLHttpRequest.prototype.send = window.__apiMocker.originalXHRSend;
-    }
-    delete window.__apiMocker;
-    console.info("API mocker reset");
-  };
-  console.info("Meter installed");
-}
+//   window.__apiMocker.enable = () => {
+//     window.__apiMockerEnabled = true;
+//   };
+//   window.__apiMocker.disable = () => {
+//     window.__apiMockerEnabled = false;
+//   };
+//   window.__apiMocker.reset = () => {
+//     if (window.__apiMocker.originalFetch)
+//       window.fetch = window.__apiMocker.originalFetch;
+//     if (window.__apiMocker.originalXHROpen) {
+//       XMLHttpRequest.prototype.open = window.__apiMocker.originalXHROpen;
+//       XMLHttpRequest.prototype.send = window.__apiMocker.originalXHRSend;
+//     }
+//     delete window.__apiMocker;
+//     console.info("API mocker reset");
+//   };
+//   console.info("Meter installed");
+// }
 
 /**
  * @typedef {Object} HostOptions
@@ -216,8 +216,8 @@ export async function createEditorHost(options = {}) {
 
   const context = await launchContext(dir, { headless });
   await context.addInitScript(webmcpStub);
-  await context.addInitScript(mandatoryInstallScript);
-  log.warn("/meter/balance responses are synthetic.");
+  // await context.addInitScript(mandatoryInstallScript);
+  // log.warn("/meter/balance responses are synthetic.");
 
   const page = context.pages()[0] ?? (await context.newPage());
   page.on("console", (msg) => log.debug(`[page:${msg.type()}] ${msg.text()}`));
