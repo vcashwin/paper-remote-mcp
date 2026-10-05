@@ -261,7 +261,7 @@ Exports: `createEditorHost`, `startMcpServer`, `startRelay`, `login`, `checkSess
 ## Development
 
 ```bash
-git clone https://github.com/vcashwin/paper-mcp
+git clone https://github.com/vcashwin/paper-remote-mcp
 cd paper-remote-mcp
 npm install
 node src/cli.js login

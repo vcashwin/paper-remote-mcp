@@ -39,11 +39,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/vcashwin/paper-mcp.git"
+    "url": "git+https://github.com/vcashwin/paper-remote-mcp.git"
   },
-  "homepage": "https://github.com/vcashwin/paper-mcp#readme",
+  "homepage": "https://github.com/vcashwin/paper-remote-mcp#readme",
   "bugs": {
-    "url": "https://github.com/vcashwin/paper-mcp/issues"
+    "url": "https://github.com/vcashwin/paper-remote-mcp/issues"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
