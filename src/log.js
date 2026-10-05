@@ -9,7 +9,7 @@ const current = LEVELS[process.env.PAPER_MCP_LOG || 'info'] ?? LEVELS.info;
 function emit(level, args) {
   if ((LEVELS[level] ?? 0) > current) return;
   const ts = new Date().toISOString();
-  process.stderr.write(`${ts} [paper-mcp] ${level}: ${args.map(stringify).join(' ')}\n`);
+  process.stderr.write(`${ts} [paper-remote-mcp] ${level}: ${args.map(stringify).join(' ')}\n`);
 }
 
 /** @param {unknown} v */

@@ -2,7 +2,7 @@ import { chromium } from 'playwright';
 import { profileLockHolder } from './auth/session.js';
 import { log } from './log.js';
 
-/** The profile directory is held by another running browser (usually another paper-mcp process). */
+/** The profile directory is held by another running browser (usually another paper-remote-mcp process). */
 export class ProfileInUseError extends Error {
   /** @param {string} dir @param {number | null} pid */
   constructor(dir, pid) {

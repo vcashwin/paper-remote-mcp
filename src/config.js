@@ -60,7 +60,7 @@ export function resolveEnv(name) {
 }
 
 export const SERVER_INFO = {
-  name: 'paper-mcp',
+  name: 'paper-remote-mcp',
   // Kept in sync with package.json manually; read lazily where it matters.
   version: '0.1.0',
 };

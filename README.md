@@ -1,4 +1,4 @@
-# paper-mcp
+# paper-remote-mcp
 
 > **Run the Paper Design MCP without the desktop app.**
 
@@ -7,9 +7,9 @@ Sign in with your [Paper](https://paper.design) account, host the Paper editor *
 Sign in once, then it runs headless:
 
 ```bash
-npx paper-mcp login      # one-time: sign in with your Paper account (OAuth)
-npx paper-mcp doctor     # verify Node + browser + sign-in + tools
-npx paper-mcp mcp        # start the stdio MCP server
+npx paper-remote-mcp login      # one-time: sign in with your Paper account (OAuth)
+npx paper-remote-mcp doctor     # verify Node + browser + sign-in + tools
+npx paper-remote-mcp mcp        # start the stdio MCP server
 ```
 
 > Status: v0.1, community project. Not affiliated with or endorsed by Paper. Uses only your own authenticated account and Paper's own public endpoints.
@@ -20,7 +20,7 @@ npx paper-mcp mcp        # start the stdio MCP server
 
 Paper ships an MCP server, but it is wired into the **desktop app**. If you look at how it actually works (see [How it works](#how-it-works)), the MCP "server" inside Paper Desktop is a thin proxy — every tool call is executed by running JavaScript against `window.mcpHandlers` inside the **Paper editor renderer**. There is no standalone implementation of the tools; they manipulate the live editor.
 
-So "just run it with `npx` and skip the app" has one hard requirement: **something has to host the editor renderer.** That something doesn't have to be Paper's Electron app — it can be a browser page you control. `paper-mcp` does exactly that:
+So "just run it with `npx` and skip the app" has one hard requirement: **something has to host the editor renderer.** That something doesn't have to be Paper's Electron app — it can be a browser page you control. `paper-remote-mcp` does exactly that:
 
 - **No desktop app.** A headless Chromium (or your installed Chrome) loads `app.paper.design`.
 - **Real sign-in.** You authenticate through Paper's normal WorkOS AuthKit OAuth flow, once; the session is reused headlessly afterward.
@@ -42,7 +42,7 @@ npx playwright install chromium
 Then:
 
 ```bash
-npx paper-mcp login
+npx paper-remote-mcp login
 ```
 
 A browser window opens at `app.paper.design`. Sign in exactly as you normally would (SSO and password managers work). `login` finishes on its own once Paper's API confirms the session (`/auth/me` → 200); press **Enter** to re-check right away. Your session is saved to `~/.paper-mcp/profiles/production/`.
@@ -50,11 +50,11 @@ A browser window opens at `app.paper.design`. Sign in exactly as you normally wo
 Verify everything:
 
 ```bash
-npx paper-mcp doctor
+npx paper-remote-mcp doctor
 ```
 
 ```
-paper-mcp 0.1.0
+paper-remote-mcp 0.1.0
 node           v22.x
 environment    production (https://app.paper.design)
 browser        ✓ launched
@@ -67,7 +67,7 @@ desktop app    • not running (fine — mcp mode does not need it)
 
 ## Register it with your agent
 
-`paper-mcp mcp` is a standard **stdio** MCP server. Add it the same way you'd add any stdio server.
+`paper-remote-mcp mcp` is a standard **stdio** MCP server. Add it the same way you'd add any stdio server.
 
 ### Claude Code
 
@@ -79,7 +79,7 @@ desktop app    • not running (fine — mcp mode does not need it)
     "paper": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "paper-mcp", "mcp"]
+      "args": ["-y", "paper-remote-mcp", "mcp"]
     }
   }
 }
@@ -88,7 +88,7 @@ desktop app    • not running (fine — mcp mode does not need it)
 Or in one line:
 
 ```bash
-claude mcp add paper -- npx -y paper-mcp mcp
+claude mcp add paper -- npx -y paper-remote-mcp mcp
 ```
 
 ### Cursor
@@ -98,7 +98,7 @@ claude mcp add paper -- npx -y paper-mcp mcp
 ```json
 {
   "mcpServers": {
-    "paper": { "command": "npx", "args": ["-y", "paper-mcp", "mcp"] }
+    "paper": { "command": "npx", "args": ["-y", "paper-remote-mcp", "mcp"] }
   }
 }
 ```
@@ -110,7 +110,7 @@ claude mcp add paper -- npx -y paper-mcp mcp
 ```toml
 [mcp_servers.paper]
 command = "npx"
-args = ["-y", "paper-mcp", "mcp"]
+args = ["-y", "paper-remote-mcp", "mcp"]
 ```
 
 ### VS Code
@@ -120,13 +120,13 @@ args = ["-y", "paper-mcp", "mcp"]
 ```json
 {
   "servers": {
-    "paper": { "type": "stdio", "command": "npx", "args": ["-y", "paper-mcp", "mcp"] }
+    "paper": { "type": "stdio", "command": "npx", "args": ["-y", "paper-remote-mcp", "mcp"] }
   }
 }
 ```
 
-> Pin a file to open at startup with `"args": ["-y", "paper-mcp", "mcp", "--file", "<fileId-or-url>"]`.
-> Run `npx paper-mcp login` first — the server inherits that saved session.
+> Pin a file to open at startup with `"args": ["-y", "paper-remote-mcp", "mcp", "--file", "<fileId-or-url>"]`.
+> Run `npx paper-remote-mcp login` first — the server inherits that saved session.
 
 ---
 
@@ -134,12 +134,12 @@ args = ["-y", "paper-mcp", "mcp"]
 
 | Command                     | What it does                                                               |
 | --------------------------- | -------------------------------------------------------------------------- |
-| `paper-mcp mcp` _(default)_ | Start the stdio MCP server backed by a headless editor.                    |
-| `paper-mcp login`           | Interactive OAuth sign-in; stores the session for headless reuse.          |
-| `paper-mcp logout`          | Delete the locally saved session (e.g. to switch accounts).                |
-| `paper-mcp doctor`          | Diagnose Node, browser, sign-in, tool availability, desktop app.           |
-| `paper-mcp relay`           | **Bonus:** thin stdio→HTTP relay to a _running_ Paper Desktop (see below). |
-| `paper-mcp help`            | Show help.                                                                 |
+| `paper-remote-mcp mcp` _(default)_ | Start the stdio MCP server backed by a headless editor.                    |
+| `paper-remote-mcp login`           | Interactive OAuth sign-in; stores the session for headless reuse.          |
+| `paper-remote-mcp logout`          | Delete the locally saved session (e.g. to switch accounts).                |
+| `paper-remote-mcp doctor`          | Diagnose Node, browser, sign-in, tool availability, desktop app.           |
+| `paper-remote-mcp relay`           | **Bonus:** thin stdio→HTTP relay to a _running_ Paper Desktop (see below). |
+| `paper-remote-mcp help`            | Show help.                                                                 |
 
 ### Options
 
@@ -161,7 +161,7 @@ Environment variables: `PAPER_MCP_ENV`, `PAPER_MCP_PROFILE`, `PAPER_MCP_LOG` (`s
         │  MCP over stdio
         ▼
   ┌─────────────────────────┐
-  │        paper-mcp         │
+  │        paper-remote-mcp         │
   │  MCP stdio server        │
   │        │                 │
   │        ▼ page.evaluate   │
@@ -171,7 +171,7 @@ Environment variables: `PAPER_MCP_ENV`, `PAPER_MCP_PROFILE`, `PAPER_MCP_LOG` (`s
   └─────────────────────────┘          • handleToolCall()
 ```
 
-1. **Hosting the editor.** `paper-mcp` launches a persistent browser context (so cookies survive) and opens `app.paper.design`.
+1. **Hosting the editor.** `paper-remote-mcp` launches a persistent browser context (so cookies survive) and opens `app.paper.design`.
 2. **The WebMCP shim (the key trick).** Paper's web bootstrap only builds `window.mcpHandlers` when it detects the Electron desktop shell **or** a WebMCP-capable browser:
 
    ```js
@@ -179,7 +179,7 @@ Environment variables: `PAPER_MCP_ENV`, `PAPER_MCP_PROFILE`, `PAPER_MCP_LOG` (`s
    (bn /* desktop */ || Rae) && (window.resolveMCPHandlers = /* build handlers */);
    ```
 
-   `paper-mcp` injects a tiny no-op `navigator.modelContext` **before page scripts run**. That flips Paper into WebMCP mode, so it builds the real handlers — and, unlike pretending to be the desktop shell, it keeps using ordinary **web cookie auth** with no Electron/ipcRenderer surface to stub.
+   `paper-remote-mcp` injects a tiny no-op `navigator.modelContext` **before page scripts run**. That flips Paper into WebMCP mode, so it builds the real handlers — and, unlike pretending to be the desktop shell, it keeps using ordinary **web cookie auth** with no Electron/ipcRenderer surface to stub.
 
 3. **Serving MCP.** The stdio server mirrors Paper Desktop's own bridge:
    - `tools/list` → `window.mcpHandlers.getMCPServerConfig(clientInfo, true)` (live catalog + instructions).
@@ -190,18 +190,18 @@ This is effectively a browser-based re-implementation of Paper Desktop's `PAPER_
 
 ### Authentication
 
-Sign-in is Paper's normal **WorkOS AuthKit OAuth** flow, completed in the browser `paper-mcp` controls. The resulting session cookies persist in the profile directory, so headless runs are already authenticated — the same way a browser keeps you logged in between launches. `paper-mcp` never sees or stores your password, and talks only to Paper's own public endpoints with _your_ account.
+Sign-in is Paper's normal **WorkOS AuthKit OAuth** flow, completed in the browser `paper-remote-mcp` controls. The resulting session cookies persist in the profile directory, so headless runs are already authenticated — the same way a browser keeps you logged in between launches. `paper-remote-mcp` never sees or stores your password, and talks only to Paper's own public endpoints with _your_ account.
 
-> On Paper's MCP OAuth schema: Paper Desktop's local server intentionally is **not** an OAuth MCP server (it returns 404 on `/.well-known/oauth-*` so clients don't try an OAuth handshake). Its auth is WorkOS, not the MCP OAuth spec. `paper-mcp` follows the same model: OAuth to _Paper_ (to get your session), plain stdio to your _agent_ (no auth needed for a local stdio child process).
+> On Paper's MCP OAuth schema: Paper Desktop's local server intentionally is **not** an OAuth MCP server (it returns 404 on `/.well-known/oauth-*` so clients don't try an OAuth handshake). Its auth is WorkOS, not the MCP OAuth spec. `paper-remote-mcp` follows the same model: OAuth to _Paper_ (to get your session), plain stdio to your _agent_ (no auth needed for a local stdio child process).
 
 ---
 
 ## `relay` mode (bonus)
 
-If you _do_ keep Paper Desktop installed and running, `paper-mcp relay` is a zero-dependency re-implementation of Paper's bundled `paper mcp` Go binary: it forwards stdio MCP to the desktop's local server at `http://127.0.0.1:29979/mcp`.
+If you _do_ keep Paper Desktop installed and running, `paper-remote-mcp relay` is a zero-dependency re-implementation of Paper's bundled `paper mcp` Go binary: it forwards stdio MCP to the desktop's local server at `http://127.0.0.1:29979/mcp`.
 
 ```bash
-paper-mcp relay            # requires the Paper desktop app to be open
+paper-remote-mcp relay            # requires the Paper desktop app to be open
 ```
 
 This removes the need for Paper's shipped CLI binary, but **not** the desktop app. For a truly app-free setup, use `mcp` (the default).
@@ -210,9 +210,9 @@ This removes the need for Paper's shipped CLI binary, but **not** the desktop ap
 
 ## Limitations
 
-- Tools run against the **open editor page**, so they act on one file at a time; `paper-mcp` navigates between files automatically when a tool call names a different `fileId`, which costs a short reload per switch.
+- Tools run against the **open editor page**, so they act on one file at a time; `paper-remote-mcp` navigates between files automatically when a tool call names a different `fileId`, which costs a short reload per switch.
 - A headless browser isn't free — expect a few seconds of startup and a few hundred MB of RAM while the server runs.
-- This rides on Paper's current web internals (the WebMCP shim, `window.mcpHandlers`). If Paper changes those, `paper-mcp doctor` will tell you, and the shim may need an update.
+- This rides on Paper's current web internals (the WebMCP shim, `window.mcpHandlers`). If Paper changes those, `paper-remote-mcp doctor` will tell you, and the shim may need an update.
 - Single user per profile directory; run multiple environments/accounts with `--profile`.
 
 ---
@@ -223,29 +223,29 @@ This removes the need for Paper's shipped CLI binary, but **not** the desktop ap
 
 - **Chrome allows one process per profile.** Your normal Chrome is almost always running and holds its profile, so using it would mean quitting Chrome every time the MCP server starts.
 - **Chrome 136+ refuses automation on its default profile** on purpose, so tools can't take over your real browser.
-- **Your profile's cookies are encrypted with your Keychain key.** Copying them out is what infostealer malware does, so `paper-mcp` doesn't.
+- **Your profile's cookies are encrypted with your Keychain key.** Copying them out is what infostealer malware does, so `paper-remote-mcp` doesn't.
 - **The MCP server runs Chrome for as long as your agent runs**, so it needs a profile that won't collide with yours anyway.
 
-The usual way to sign in through your everyday browser is the CLI pattern `gh auth login` uses: open your default browser, then redirect to a `localhost` callback. That needs Paper to allow such a redirect for third-party clients, and today Paper's sign-in only redirects to its own desktop app (`paper://`) or its web app. If Paper adds that (or personal access tokens), `paper-mcp` can switch to it.
+The usual way to sign in through your everyday browser is the CLI pattern `gh auth login` uses: open your default browser, then redirect to a `localhost` callback. That needs Paper to allow such a redirect for third-party clients, and today Paper's sign-in only redirects to its own desktop app (`paper://`) or its web app. If Paper adds that (or personal access tokens), `paper-remote-mcp` can switch to it.
 
 You only sign in once. **Continue with email** (Paper emails you a code) works in any browser. If Google sign-in is refused in the separate window, use email instead.
 
 ## Troubleshooting
 
-**`doctor` says "not signed in" after `login`.** Run `paper-mcp login` again and wait for `✓ Signed in`. Login only succeeds once Paper's API returns 200 for `/auth/me`. If it keeps saying not signed in after you finish in the browser, the status it prints (e.g. `/auth/me → 401`) tells you what Paper returned.
+**`doctor` says "not signed in" after `login`.** Run `paper-remote-mcp login` again and wait for `✓ Signed in`. Login only succeeds once Paper's API returns 200 for `/auth/me`. If it keeps saying not signed in after you finish in the browser, the status it prints (e.g. `/auth/me → 401`) tells you what Paper returned.
 
 **"The Paper profile … is in use by another browser".** Chrome allows one process per profile. While your agent runs the `paper` MCP server, `login`, `logout` and `doctor` can't open the same profile. Quit the agent (or that process) first, or use a separate `--profile`.
 
-**Switching accounts.** `paper-mcp logout`, then `paper-mcp login`.
+**Switching accounts.** `paper-remote-mcp logout`, then `paper-remote-mcp login`.
 
-**Browser won't launch.** `paper-mcp` uses your installed Google Chrome and falls back to Playwright's Chromium only when Chrome isn't installed (`npx playwright install chromium`). The same browser is used for `login` and `mcp`, so the session cookies stay readable.
+**Browser won't launch.** `paper-remote-mcp` uses your installed Google Chrome and falls back to Playwright's Chromium only when Chrome isn't installed (`npx playwright install chromium`). The same browser is used for `login` and `mcp`, so the session cookies stay readable.
 
 ---
 
 ## Programmatic API
 
 ```js
-import { createEditorHost, startMcpServer, login } from 'paper-mcp';
+import { createEditorHost, startMcpServer, login } from 'paper-remote-mcp';
 
 const host = await createEditorHost({ fileId: 'XXXXXXXXXXXXXXXXXXXXXXXXXX', headless: true });
 await host.start();
@@ -262,7 +262,7 @@ Exports: `createEditorHost`, `startMcpServer`, `startRelay`, `login`, `checkSess
 
 ```bash
 git clone https://github.com/vcashwin/paper-mcp
-cd paper-mcp
+cd paper-remote-mcp
 npm install
 node src/cli.js login
 node src/cli.js doctor

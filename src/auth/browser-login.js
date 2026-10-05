@@ -27,7 +27,7 @@ export async function login(options = {}) {
 
   try {
     if ((await checkSession(context, env)).signedIn) {
-      process.stderr.write('\n✓ Already signed in to Paper. Run `paper-mcp logout` first to switch accounts.\n');
+      process.stderr.write('\n✓ Already signed in to Paper. Run `paper-remote-mcp logout` first to switch accounts.\n');
       return true;
     }
 
@@ -37,7 +37,7 @@ export async function login(options = {}) {
     });
 
     process.stderr.write(
-      `\nA separate Chrome window for paper-mcp is open at ${env.app}.\n` +
+      `\nA separate Chrome window for paper-remote-mcp is open at ${env.app}.\n` +
         "It can't use your everyday Chrome profile, so you sign in here once and the session is kept.\n" +
         '"Continue with email" (Paper emails you a code) works anywhere; if Google sign-in is refused in this window, use that.\n' +
         'This finishes on its own once Paper confirms the session.\n'
@@ -50,7 +50,7 @@ export async function login(options = {}) {
       // Let Chrome flush the session cookies to disk before shutting down.
       await page.waitForTimeout(1_000).catch(() => {});
     } else {
-      process.stderr.write('\n✗ Not signed in. Run `paper-mcp login` again when you are ready.\n');
+      process.stderr.write('\n✗ Not signed in. Run `paper-remote-mcp login` again when you are ready.\n');
       process.exitCode = 1;
     }
     return signedIn;

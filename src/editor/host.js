@@ -5,11 +5,11 @@ import { log } from "../log.js";
 
 /**
  * Thrown when the stored browser profile is not signed in. The CLI turns this
- * into a friendly "run `paper-mcp login`" message.
+ * into a friendly "run `paper-remote-mcp login`" message.
  */
 export class AuthRequiredError extends Error {
   constructor(
-    message = "Not signed in to Paper. Run `paper-mcp login` first.",
+    message = "Not signed in to Paper. Run `paper-remote-mcp login` first.",
   ) {
     super(message);
     this.name = "AuthRequiredError";
@@ -325,7 +325,7 @@ export async function createEditorHost(options = {}) {
     if (currentNav().authBounce) throw new AuthRequiredError();
     throw new Error(
       "Paper MCP handlers never initialised. The page may not be the editor, or the WebMCP shim failed. " +
-        "Try `paper-mcp doctor`, or re-run `paper-mcp login`.",
+        "Try `paper-remote-mcp doctor`, or re-run `paper-remote-mcp login`.",
     );
   }
 
@@ -388,7 +388,7 @@ export async function createEditorHost(options = {}) {
       const session = await checkSession(context, env);
       if (!session.signedIn) {
         throw new AuthRequiredError(
-          `Not signed in to Paper (API /auth/me → ${session.status ?? "no response"}). Run \`paper-mcp login\` first.`,
+          `Not signed in to Paper (API /auth/me → ${session.status ?? "no response"}). Run \`paper-remote-mcp login\` first.`,
         );
       }
       await openFile(

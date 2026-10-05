@@ -10,10 +10,10 @@ import { createEditorHost, AuthRequiredError } from './editor/host.js';
 import { DESKTOP_MCP, resolveEnv, SERVER_INFO } from './config.js';
 import { log } from './log.js';
 
-const HELP = `paper-mcp ${SERVER_INFO.version} — run the Paper Design MCP without the desktop app.
+const HELP = `paper-remote-mcp ${SERVER_INFO.version} — run the Paper Design MCP without the desktop app.
 
 Usage:
-  paper-mcp <command> [options]
+  paper-remote-mcp <command> [options]
 
 Commands:
   mcp        Start the MCP server over stdio (default). Hosts a headless Paper
@@ -31,13 +31,13 @@ Options:
   --env <name>        Paper environment: production (default) or staging.
   --profile <dir>     Override the profile/session directory.
   --headful           Show the browser window (default: headless) for mcp/doctor.
-  --client-name <s>   Identify this client to Paper (default: paper-mcp).
+  --client-name <s>   Identify this client to Paper (default: paper-remote-mcp).
   --url <url>         relay only: Paper Desktop MCP URL (default: ${DESKTOP_MCP.url}).
 
 First run:
-  npx paper-mcp login
-  npx paper-mcp doctor
-Then register "npx paper-mcp mcp" as a stdio MCP server in your agent.
+  npx paper-remote-mcp login
+  npx paper-remote-mcp doctor
+Then register "npx paper-remote-mcp mcp" as a stdio MCP server in your agent.
 `;
 
 /** @param {unknown} err */
@@ -127,7 +127,7 @@ async function doctor(hostOptions) {
   /** @param {string} s */
   const out = (s) => process.stdout.write(s + '\n');
   const env = resolveEnv(hostOptions.env);
-  out(`paper-mcp ${SERVER_INFO.version}`);
+  out(`paper-remote-mcp ${SERVER_INFO.version}`);
   out(`node           ${process.version}`);
   out(`platform       ${process.platform}/${process.arch}`);
   out(`environment    ${env.key} (${env.app})`);
@@ -153,14 +153,14 @@ async function doctor(hostOptions) {
     const session = await checkSession(host.context, host.env);
     if (!session.signedIn) {
       out(`sign-in        ✗ not signed in (Paper API /auth/me → ${session.status ?? 'no response'})`);
-      out('\nFix: run `paper-mcp login`.');
+      out('\nFix: run `paper-remote-mcp login`.');
       process.exitCode = 1;
       return;
     }
     out('sign-in        ✓ authenticated (Paper API /auth/me → 200)');
 
     await host.start();
-    const config = await host.getConfig({ name: 'paper-mcp-doctor', transport: 'webmcp' });
+    const config = await host.getConfig({ name: 'paper-remote-mcp-doctor', transport: 'webmcp' });
     out(`handlers       ✓ ${config.tools?.length ?? 0} tools available`);
   } catch (err) {
     out(`handlers       ✗ ${messageOf(err)}`);

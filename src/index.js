@@ -1,6 +1,6 @@
-// Programmatic entry point — import these to embed or extend paper-mcp.
+// Programmatic entry point — import these to embed or extend paper-remote-mcp.
 //
-//   import { createEditorHost } from 'paper-mcp';
+//   import { createEditorHost } from 'paper-remote-mcp';
 //   const host = await createEditorHost({ fileId });
 //   await host.start();
 //   const { tools } = await host.getConfig({ name: 'my-app' });

@@ -25,7 +25,7 @@ export async function startMcpServer(options = {}) {
 
   // One stdio process serves exactly one client, so a single agent id is fine.
   const agentId = randomUUID();
-  const clientInfo = { name: options.clientName || 'paper-mcp', transport: 'webmcp' };
+  const clientInfo = { name: options.clientName || 'paper-remote-mcp', transport: 'webmcp' };
 
   // Prime the catalog once so we can hand the client Paper's own instructions.
   const initialConfig = await host.getConfig(clientInfo);
