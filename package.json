@@ -1,6 +1,6 @@
 {
   "name": "paper-remote-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Run the Paper Design MCP without the desktop app. Sign in with your Paper account, host the editor headlessly, and drive Paper's own MCP tools from Claude Code, Cursor, Codex, or any MCP client.",
   "type": "module",
   "bin": {
