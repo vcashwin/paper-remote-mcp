@@ -2,7 +2,7 @@
 
 > **Run the Paper Design MCP without the desktop app.**
 
-Sign in with your [Paper](https://paper.design) account, host the Paper editor **headlessly in a browser**, and expose the *same* MCP tools the desktop app exposes (`write_html`, `get_screenshot`, `get_jsx`, `create_file`, …) over stdio — for Claude Code, Cursor, Codex, or any MCP client.
+Sign in with your [Paper](https://paper.design) account, host the Paper editor **headlessly in a browser**, and expose the _same_ MCP tools the desktop app exposes (`write_html`, `get_screenshot`, `get_jsx`, `create_file`, …) over stdio — for Claude Code, Cursor, Codex, or any MCP client.
 
 Sign in once, then it runs headless:
 
@@ -132,43 +132,27 @@ args = ["-y", "paper-mcp", "mcp"]
 
 ## Commands
 
-| Command | What it does |
-| --- | --- |
-| `paper-mcp mcp` *(default)* | Start the stdio MCP server backed by a headless editor. |
-| `paper-mcp login` | Interactive OAuth sign-in; stores the session for headless reuse. |
-| `paper-mcp logout` | Delete the locally saved session (e.g. to switch accounts). |
-| `paper-mcp doctor` | Diagnose Node, browser, sign-in, tool availability, desktop app. |
-| `paper-mcp relay` | **Bonus:** thin stdio→HTTP relay to a *running* Paper Desktop (see below). |
-| `paper-mcp help` | Show help. |
+| Command                     | What it does                                                               |
+| --------------------------- | -------------------------------------------------------------------------- |
+| `paper-mcp mcp` _(default)_ | Start the stdio MCP server backed by a headless editor.                    |
+| `paper-mcp login`           | Interactive OAuth sign-in; stores the session for headless reuse.          |
+| `paper-mcp logout`          | Delete the locally saved session (e.g. to switch accounts).                |
+| `paper-mcp doctor`          | Diagnose Node, browser, sign-in, tool availability, desktop app.           |
+| `paper-mcp relay`           | **Bonus:** thin stdio→HTTP relay to a _running_ Paper Desktop (see below). |
+| `paper-mcp help`            | Show help.                                                                 |
 
 ### Options
 
-| Flag | Meaning |
-| --- | --- |
-| `--file <id\|url>` | File to open on start and use as the default tool target. |
-| `--env <name>` | `production` (default) or `staging`. |
-| `--profile <dir>` | Override the session directory. |
-| `--headful` | Show the browser window (debugging). |
-| `--client-name <s>` | How to identify this client to Paper. |
-| `--url <url>` | `relay` only: Paper Desktop MCP URL. |
+| Flag                | Meaning                                                   |
+| ------------------- | --------------------------------------------------------- |
+| `--file <id\|url>`  | File to open on start and use as the default tool target. |
+| `--env <name>`      | `production` (default) or `staging`.                      |
+| `--profile <dir>`   | Override the session directory.                           |
+| `--headful`         | Show the browser window (debugging).                      |
+| `--client-name <s>` | How to identify this client to Paper.                     |
+| `--url <url>`       | `relay` only: Paper Desktop MCP URL.                      |
 
 Environment variables: `PAPER_MCP_ENV`, `PAPER_MCP_PROFILE`, `PAPER_MCP_LOG` (`silent|error|warn|info|debug`).
-
-### Staging meter mock (internal demos)
-
-For an explicitly authorized internal demo, `PAPER_MCP_DEMO_METER_MOCK=1` injects
-a synthetic `/meter/balance` response before page scripts run. It is restricted
-to `--env staging`; using it with production exits with an error. The mock can
-be controlled from the page with `__apiMocker.enable()`,
-`__apiMocker.disable()`, and `__apiMocker.reset()`.
-
-```bash
-PAPER_MCP_DEMO_METER_MOCK=1 paper-mcp mcp --env staging
-```
-
-The setting is off by default and does not affect normal sessions.
-
----
 
 ## How it works
 
@@ -196,6 +180,7 @@ The setting is off by default and does not affect normal sessions.
    ```
 
    `paper-mcp` injects a tiny no-op `navigator.modelContext` **before page scripts run**. That flips Paper into WebMCP mode, so it builds the real handlers — and, unlike pretending to be the desktop shell, it keeps using ordinary **web cookie auth** with no Electron/ipcRenderer surface to stub.
+
 3. **Serving MCP.** The stdio server mirrors Paper Desktop's own bridge:
    - `tools/list` → `window.mcpHandlers.getMCPServerConfig(clientInfo, true)` (live catalog + instructions).
    - `tools/call` → `window.mcpHandlers.handleToolCall(agentId, name, args, clientInfo)`.
@@ -205,15 +190,15 @@ This is effectively a browser-based re-implementation of Paper Desktop's `PAPER_
 
 ### Authentication
 
-Sign-in is Paper's normal **WorkOS AuthKit OAuth** flow, completed in the browser `paper-mcp` controls. The resulting session cookies persist in the profile directory, so headless runs are already authenticated — the same way a browser keeps you logged in between launches. `paper-mcp` never sees or stores your password, and talks only to Paper's own public endpoints with *your* account.
+Sign-in is Paper's normal **WorkOS AuthKit OAuth** flow, completed in the browser `paper-mcp` controls. The resulting session cookies persist in the profile directory, so headless runs are already authenticated — the same way a browser keeps you logged in between launches. `paper-mcp` never sees or stores your password, and talks only to Paper's own public endpoints with _your_ account.
 
-> On Paper's MCP OAuth schema: Paper Desktop's local server intentionally is **not** an OAuth MCP server (it returns 404 on `/.well-known/oauth-*` so clients don't try an OAuth handshake). Its auth is WorkOS, not the MCP OAuth spec. `paper-mcp` follows the same model: OAuth to *Paper* (to get your session), plain stdio to your *agent* (no auth needed for a local stdio child process).
+> On Paper's MCP OAuth schema: Paper Desktop's local server intentionally is **not** an OAuth MCP server (it returns 404 on `/.well-known/oauth-*` so clients don't try an OAuth handshake). Its auth is WorkOS, not the MCP OAuth spec. `paper-mcp` follows the same model: OAuth to _Paper_ (to get your session), plain stdio to your _agent_ (no auth needed for a local stdio child process).
 
 ---
 
 ## `relay` mode (bonus)
 
-If you *do* keep Paper Desktop installed and running, `paper-mcp relay` is a zero-dependency re-implementation of Paper's bundled `paper mcp` Go binary: it forwards stdio MCP to the desktop's local server at `http://127.0.0.1:29979/mcp`.
+If you _do_ keep Paper Desktop installed and running, `paper-mcp relay` is a zero-dependency re-implementation of Paper's bundled `paper mcp` Go binary: it forwards stdio MCP to the desktop's local server at `http://127.0.0.1:29979/mcp`.
 
 ```bash
 paper-mcp relay            # requires the Paper desktop app to be open
