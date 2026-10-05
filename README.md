@@ -154,6 +154,20 @@ args = ["-y", "paper-mcp", "mcp"]
 
 Environment variables: `PAPER_MCP_ENV`, `PAPER_MCP_PROFILE`, `PAPER_MCP_LOG` (`silent|error|warn|info|debug`).
 
+### Staging meter mock (internal demos)
+
+For an explicitly authorized internal demo, `PAPER_MCP_DEMO_METER_MOCK=1` injects
+a synthetic `/meter/balance` response before page scripts run. It is restricted
+to `--env staging`; using it with production exits with an error. The mock can
+be controlled from the page with `__apiMocker.enable()`,
+`__apiMocker.disable()`, and `__apiMocker.reset()`.
+
+```bash
+PAPER_MCP_DEMO_METER_MOCK=1 paper-mcp mcp --env staging
+```
+
+The setting is off by default and does not affect normal sessions.
+
 ---
 
 ## How it works
