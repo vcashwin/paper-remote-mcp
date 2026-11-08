@@ -73,3 +73,26 @@ export async function checkSession(context, env) {
     return { signedIn: false, status: null };
   }
 }
+
+/**
+ * `checkSession` plus who is signed in: Paper's `/auth/me` user (id, email) when
+ * the session is good.
+ *
+ * @param {import('playwright').BrowserContext} context
+ * @param {{ api: string, app: string }} env
+ * @returns {Promise<{ status: number | null, user: { id: string, email: string } | null }>}
+ */
+export async function whoAmI(context, env) {
+  try {
+    const res = await context.request.get(`${env.api}/auth/me`, {
+      headers: { origin: env.app, referer: `${env.app}/` },
+      timeout: 15_000,
+    });
+    if (res.status() !== 200) return { status: res.status(), user: null };
+    const body = await res.json().catch(() => null);
+    const user = body?.user;
+    return typeof user?.id === 'string' ? { status: 200, user: { id: user.id, email: String(user.email ?? '') } } : { status: 200, user: null };
+  } catch {
+    return { status: null, user: null };
+  }
+}

@@ -1,0 +1,25 @@
+# docker compose -f deploy/compose.yaml up -d   (see DEPLOYMENT.md)
+services:
+  paper-mcp:
+    build: ..
+    image: paper-remote-mcp:latest
+    restart: unless-stopped
+    env_file: paper-mcp.env
+    shm_size: "1gb"          # Chromium needs more than Docker's 64 MB /dev/shm
+    volumes:
+      - paper-mcp-data:/data
+    ports:
+      - "127.0.0.1:8787:8787" # local only; the tunnel (below) is the public way in
+
+  # Optional: a Cloudflare Tunnel, as Linefold runs. Create the tunnel in the
+  # Cloudflare dashboard with a public hostname → http://paper-mcp:8787.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    env_file: paper-mcp.env  # reads TUNNEL_TOKEN
+    depends_on: [paper-mcp]
+    profiles: [tunnel]
+
+volumes:
+  paper-mcp-data:

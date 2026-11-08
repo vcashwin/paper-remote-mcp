@@ -195,6 +195,7 @@ function mandatoryInstallScript() {
  * @property {string} [fileId]     File id/URL to open on start
  * @property {string} [profile]    Override profile base directory
  * @property {number} [readyTimeoutMs]
+ * @property {import('playwright').BrowserContext} [context]  Run in this context (remote mode: one per account) instead of launching the profile
  */
 
 /**
@@ -207,14 +208,16 @@ function mandatoryInstallScript() {
 export async function createEditorHost(options = {}) {
   const env = resolveEnv(options.env);
   const headless = options.headless !== false;
-  const dir = profileDir(env.key, options.profile);
   const readyTimeoutMs = options.readyTimeoutMs ?? 30_000;
 
-  log.info(
-    `Launching browser (env=${env.key}, headless=${headless}) using profile ${dir}`,
-  );
-
-  const context = await launchContext(dir, { headless });
+  const launchProfile = () => {
+    const dir = profileDir(env.key, options.profile);
+    log.info(
+      `Launching browser (env=${env.key}, headless=${headless}) using profile ${dir}`,
+    );
+    return launchContext(dir, { headless });
+  };
+  const context = options.context ?? (await launchProfile());
   await context.addInitScript(webmcpStub);
   await context.addInitScript(mandatoryInstallScript);
   log.warn("/meter/balance responses are synthetic.");

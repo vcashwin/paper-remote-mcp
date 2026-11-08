@@ -52,7 +52,7 @@ AI client ──Bearer──▶ /mcp (stateless Streamable HTTP)
 - 401 challenge: `Bearer resource_metadata="…/.well-known/oauth-protected-resource/mcp", scope="paper"`.
 - A single scope, `paper`, for now. Paper's tools don't split into read and write cleanly; add a split when someone needs one.
 - **Personal keys** for clients without OAuth, CI and Linefold agent sessions, matching Linefold's `lin_api_` keys:
-  - A signed-in `/keys` page mints `pmcp_key_…` bound to the linked Paper account.
+  - A signed-in `/account` page mints `pmcp_key_…` bound to the linked Paper account.
   - Usage: `claude mcp add --transport http paper https://…/mcp --header "Authorization: Bearer pmcp_key_…"`.
 
 ### 2. Link Paper (hop 2): where we differ from Linefold
@@ -63,8 +63,8 @@ and then issues the code. Each method produces the same thing: a sealed `storage
 
 | Method | UX | Covers | Build |
 |---|---|---|---|
-| **Email code (default)** | "Your Paper email" → "Enter the 6-digit code Paper just emailed you". | Email accounts, and probably Google-created accounts with the same email (spike item 1). | A headless context opens `api.paper.design/auth/sign-in`, fills the email, waits for the code input, fills the user's code, then waits for `/auth/me` → 200. |
-| **Link from this computer** | The page shows `PAPR-7KQ2` and "run `npx paper-remote-mcp link PAPR-7KQ2`". The page continues by itself. | Anyone already signed in with today's local `login`, and SSO or Google-only accounts. | `link` reads the local profile's `storageState` and POSTs it over TLS to `/link/<code>`. The code is single-use and lasts 10 minutes, like a device code. |
+| **Sign in through the server (default)** | "Paper email" → whatever Paper asks next: "Paper password" and/or "the code Paper just sent you" (email verification, MFA), with Paper's own error text. | Email and password accounts. | A headless context opens `api.paper.design/auth/sign-in` and fills each step. After each step it waits for `/auth/me` → 200, a password field, a one-time-code field, an error line, or a non-Paper host (Google, SSO), which means "use the other method". |
+| **Link from this computer** | The page shows `ABCD-EFGH` and `npx -y paper-remote-mcp link ABCD-EFGH --server …`. The page continues by itself. | Google and SSO accounts, and anyone already signed in with local `login`. | `link` reads the local `login` profile's session (running `login` first if needed) and POSTs it to `/link/code/<code>`. The code is single-use, lasts 10 minutes, and only the browser holding its poll secret receives the account. |
 | Live window (only if the first two fall short) | A screencast of a server-side Chromium inside the popup. | Password, SSO, CAPTCHA. | CDP `Page.startScreencast` plus input forwarding. Deferred. |
 | Paper OAuth (the long-term swap) | "Sign in with Paper". | Everyone. | Only if Paper allowlists our redirect or ships PATs. It becomes Linefold's two hops exactly; nothing else changes. |
 
@@ -105,21 +105,29 @@ then re-runs OAuth, which re-runs Link, so the client heals itself with no suppo
   - Cursor and VS Code: `{ "url": … }`
   - Codex: `mcp-remote` for stdio-only clients.
 
-## File plan
+**Measured during the build (2026-11-08):**
+- Paper's "Continue with email" leads to a **password** page; no email code was offered. So the in-browser link follows
+  whatever step Paper shows, instead of assuming a code.
+- Two copies of one Paper session renew independently. The local profile renewed its cookie, and an older snapshot of the
+  same session still worked afterwards and renewed itself too. So `link` can safely share the local session.
+
+## File plan (as built)
 ```
-src/remote/server.js     node:http router: /mcp, well-knowns, /authorize, /token, /register, /link/*, /keys, /healthz
-src/remote/frontDoor.js  port of linear-re mcp/frontDoor.ts + clients.ts (CIMD, DCR, PKCE, rotation, revocation)
-src/remote/store.js      node:sqlite schema + queries
-src/remote/seal.js       AES-256-GCM seal/unseal (node:crypto)
-src/remote/link.js       email-code driver + link-code endpoint
-src/remote/pool.js       shared Chromium, per-account contexts, LRU/idle eviction, mutex, cookie write-back
-src/remote/pages.js      consent / link / keys HTML (no framework)
-src/editor/host.js       accept a BrowserContext
-src/cli.js               + `serve`, + `link <code>`
-test/frontDoor.test.js   port of linear-re sync-tests/mcpFrontDoor.test.ts cases (node:test)
+src/remote/server.js     node:http router: /mcp (stateless SDK transport per request), well-knowns, /account, /healthz, /
+src/remote/frontDoor.js  port of linear-re mcp/frontDoor.ts: metadata, /authorize, /token, /register, bearer → account
+src/remote/clients.js    port of linear-re mcp/clients.ts + publicNetwork.ts: DCR, CIMD (public addresses only)
+src/remote/link.js       Link Paper: sign-in jobs, link codes, the account cookie
+src/remote/paper.js      the Paper seam: validate, signIn (step machine), editor pool (config, call)
+src/remote/accounts.js   accounts + sealed sessions
+src/remote/store.js      node:sqlite schema
+src/remote/seal.js       HKDF-derived AES-256-GCM sealing, HMAC signing, digests
+src/remote/pages.js      consent / link / account / setup HTML (no framework)
+src/remote/serve.js      env → server; src/remote/linkCli.js  `link <CODE>`
+src/editor/host.js       accepts a BrowserContext (remote) or launches the profile (local, unchanged)
+test/remote.test.js      12 HTTP-level tests with a fake Paper, incl. the real MCP SDK client's OAuth flow
 ```
 
-## Phases
+## Phases (tracked as VCA-471 → VCA-472…477; all built on this branch)
 1. **Spike (1–2 days).**
    - Drive the email code end to end, including a Google-created account.
    - Confirm a cookie sealed on this Mac works from the EC2 IP (not IP-bound).
@@ -132,11 +140,10 @@ test/frontDoor.test.js   port of linear-re sync-tests/mcpFrontDoor.test.ts cases
 5. Live-window fallback or Paper OAuth, only when needed.
 
 ## Risks and things to settle first
-- **The meter mock must not ship in a hosted server.** `mandatoryInstallScript` in `src/editor/host.js` fakes Paper's
-  `/meter/balance` (`mcpCap: 10000`) on every run. It was a staging demo (aa31748) that is now unconditional on `main`.
-  In a server that runs other people's accounts, it hides Paper's usage limits from them. Remove it before phase 2.
-- **Trust.** The hosted server holds live Paper sessions and receives a Paper login code. To limit the exposure:
-  - Seal sessions at rest and never log cookies or codes.
+- **The meter mock.** `mandatoryInstallScript` in `src/editor/host.js` fakes Paper's `/meter/balance` on every run,
+  including in remote mode. It was kept as-is by the owner's decision (2026-11-08).
+- **Trust.** The hosted server holds live Paper sessions and receives Paper passwords and codes while linking. To limit the exposure:
+  - Seal sessions at rest and never log cookies, passwords or codes.
   - Keep each account in its own context.
   - "Disconnect" deletes the sealed session. Paper's own "sign out everywhere" kills it upstream.
   - Start as a personal or self-hosted instance. Ask Paper for a sanctioned OAuth client before opening it to the public

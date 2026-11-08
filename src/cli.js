@@ -3,6 +3,8 @@ import { parseArgs } from 'node:util';
 import { rmSync } from 'node:fs';
 import { startMcpServer } from './mcp/server.js';
 import { startRelay } from './mcp/relay.js';
+import { startRemoteServer } from './remote/serve.js';
+import { linkToServer } from './remote/linkCli.js';
 import { login } from './auth/browser-login.js';
 import { checkSession, profileDir, profileLockHolder } from './auth/session.js';
 import { ProfileInUseError } from './browser.js';
@@ -24,6 +26,12 @@ Commands:
   doctor     Check Node, the browser, your sign-in, and Paper Desktop.
   relay      Thin stdio -> HTTP relay to a RUNNING Paper Desktop app (bonus;
              still needs the desktop app).
+  serve      Run the hosted, multi-user remote MCP server (OAuth, one URL for
+             every agent). Needs PAPER_MCP_URL and PAPER_MCP_SEAL_KEY; see
+             DEPLOYMENT.md.
+  link       link <CODE> --server <url>: hand this computer's Paper session
+             (signing in first if needed) to a hosted server. The code is on
+             the server's link page.
   help       Show this help.
 
 Options:
@@ -33,6 +41,10 @@ Options:
   --headful           Show the browser window (default: headless) for mcp/doctor.
   --client-name <s>   Identify this client to Paper (default: paper-remote-mcp).
   --url <url>         relay only: Paper Desktop MCP URL (default: ${DESKTOP_MCP.url}).
+  --port <n>          serve only: port (default: $PORT or 8787).
+  --host <addr>       serve only: interface (default: $HOST or 127.0.0.1).
+  --data <dir>        serve only: data directory (default: ~/.paper-mcp/remote).
+  --server <url>      link only: the hosted server's URL.
 
 First run:
   npx paper-remote-mcp login
@@ -48,7 +60,7 @@ async function main() {
   const command = argv[0] && !argv[0].startsWith('-') ? argv[0] : 'mcp';
   const rest = argv[0] && !argv[0].startsWith('-') ? argv.slice(1) : argv;
 
-  const { values } = parseArgs({
+  const { values, positionals } = parseArgs({
     args: rest,
     allowPositionals: true,
     options: {
@@ -58,6 +70,10 @@ async function main() {
       headful: { type: 'boolean', default: false },
       'client-name': { type: 'string' },
       url: { type: 'string' },
+      port: { type: 'string' },
+      host: { type: 'string' },
+      data: { type: 'string' },
+      server: { type: 'string' },
       help: { type: 'boolean', short: 'h', default: false },
       version: { type: 'boolean', short: 'v', default: false },
     },
@@ -97,6 +113,14 @@ async function main() {
     case 'relay':
       await startRelay({ url: values.url, clientName: values['client-name'] });
       return; // keeps running
+
+    case 'serve':
+      await startRemoteServer({ port: values.port ? Number(values.port) : undefined, host: values.host, data: values.data, env: values.env, headless: !values.headful });
+      return; // keeps running
+
+    case 'link':
+      await linkToServer(positionals[0] ?? '', { server: values.server, env: values.env, profile: values.profile });
+      return;
 
     case 'doctor':
       await doctor(hostOptions);

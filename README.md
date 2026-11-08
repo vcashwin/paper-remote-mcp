@@ -12,6 +12,19 @@ npx paper-remote-mcp doctor     # verify Node + browser + sign-in + tools
 npx paper-remote-mcp mcp        # start the stdio MCP server
 ```
 
+### Or host it once, use it from every agent
+
+`paper-remote-mcp serve` runs the same thing as a **remote MCP server**: people add one URL (`https://<your-host>/mcp`) to
+Claude Code, claude.ai, Cursor, VS Code, Codex or ChatGPT, sign in to Paper once in a popup (OAuth 2.1 with PKCE,
+client registration by metadata document or DCR, refresh rotation), and every agent gets Paper's tools — no local install.
+Headless agents use a personal key (`Authorization: Bearer pmcp_key_…`). See [DEPLOYMENT.md](DEPLOYMENT.md) and
+[docs/remote-architecture.md](docs/remote-architecture.md).
+
+```bash
+PAPER_MCP_URL=http://localhost:8787 PAPER_MCP_SEAL_KEY=$(openssl rand -base64 32) npx paper-remote-mcp serve
+claude mcp add --transport http paper http://localhost:8787/mcp
+```
+
 > Status: v0.1, community project. Not affiliated with or endorsed by Paper. Uses only your own authenticated account and Paper's own public endpoints.
 
 ---
@@ -139,6 +152,8 @@ args = ["-y", "paper-remote-mcp", "mcp"]
 | `paper-remote-mcp logout`          | Delete the locally saved session (e.g. to switch accounts).                |
 | `paper-remote-mcp doctor`          | Diagnose Node, browser, sign-in, tool availability, desktop app.           |
 | `paper-remote-mcp relay`           | **Bonus:** thin stdio→HTTP relay to a _running_ Paper Desktop (see below). |
+| `paper-remote-mcp serve`           | Hosted, multi-user remote MCP server with OAuth (see [DEPLOYMENT.md](DEPLOYMENT.md)). |
+| `paper-remote-mcp link <CODE>`     | Hand this computer's Paper session to a hosted server (`--server <url>`). |
 | `paper-remote-mcp help`            | Show help.                                                                 |
 
 ### Options
@@ -267,6 +282,7 @@ npm install
 node src/cli.js login
 node src/cli.js doctor
 npm run typecheck     # JSDoc types checked via tsc --checkJs
+npm test              # remote server: OAuth front door + MCP over HTTP (node:test)
 ```
 
 ## License

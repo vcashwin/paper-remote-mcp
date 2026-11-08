@@ -85,7 +85,7 @@ export async function startMcpServer(options = {}) {
  * guard against anything that isn't so the SDK never rejects a response.
  * @param {unknown} result
  */
-function normalizeToolResult(result) {
+export function normalizeToolResult(result) {
   if (result && typeof result === 'object' && Array.isArray(/** @type {any} */ (result).content)) {
     return result;
   }

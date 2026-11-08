@@ -53,3 +53,21 @@ export async function launchContext(userDataDir, { headless, viewport = { width:
     throw err;
   }
 }
+
+/**
+ * A plain (non-persistent) browser for remote mode, where each Paper account gets
+ * its own `browser.newContext({ storageState })`. Same Chrome-first, Chromium-fallback
+ * rule as `launchContext`.
+ *
+ * @param {{ headless: boolean }} options
+ */
+export async function launchBrowser({ headless }) {
+  const common = { headless, args: ['--disable-blink-features=AutomationControlled'] };
+  try {
+    return await chromium.launch({ channel: 'chrome', ...common });
+  } catch (err) {
+    if (!isMissingChrome(err)) throw err;
+    log.info("Google Chrome not found; using Playwright's bundled Chromium.");
+  }
+  return await chromium.launch(common);
+}

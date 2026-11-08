@@ -5,3 +5,4 @@ node_modules/
 .paper-mcp/
 profiles/
 dist/
+deploy/paper-mcp.env

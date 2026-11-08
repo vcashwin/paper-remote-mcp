@@ -21,7 +21,8 @@
     "start": "node src/cli.js",
     "login": "node src/cli.js login",
     "doctor": "node src/cli.js doctor",
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test --disable-warning=ExperimentalWarning test/*.test.js"
   },
   "keywords": [
     "paper",

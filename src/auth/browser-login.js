@@ -16,7 +16,7 @@ const POLL_INTERVAL_MS = 2_000;
  *
  * Resolves true only once Paper's API confirms the session (`/auth/me` → 200).
  *
- * @param {{ env?: string, profile?: string }} [options]
+ * @param {{ env?: string, profile?: string, successMessage?: string }} [options]
  */
 export async function login(options = {}) {
   const env = resolveEnv(options.env);
@@ -46,7 +46,7 @@ export async function login(options = {}) {
     const signedIn = await waitForSignIn(context, env);
 
     if (signedIn) {
-      process.stderr.write('\n✓ Signed in. Session saved — restart your agent (or reconnect the `paper` MCP server).\n');
+      process.stderr.write(options.successMessage ?? '\n✓ Signed in. Session saved — restart your agent (or reconnect the `paper` MCP server).\n');
       // Let Chrome flush the session cookies to disk before shutting down.
       await page.waitForTimeout(1_000).catch(() => {});
     } else {
