@@ -11,7 +11,7 @@ import https from 'node:https';
 import net from 'node:net';
 import { digest, randomString } from './seal.js';
 
-export const REGISTRATION_LIFETIME = 90 * 86_400_000;
+const REGISTRATION_LIFETIME_MS = 90 * 86_400_000;
 const METADATA_TIMEOUT = 5_000, METADATA_MAX = 5 * 1024, CACHE_MAX = 1000, CACHE_DEFAULT = 5 * 60_000, CACHE_LONGEST = 86_400_000;
 const AUTH_METHODS = ['none', 'client_secret_basic', 'client_secret_post'];
 const URI_FIELDS = ['logo_uri', 'client_uri', 'policy_uri', 'tos_uri', 'jwks_uri'];
@@ -60,7 +60,7 @@ for (const [address, prefix] of /** @type {const} */ ([['::', 96], ['100::', 64]
   INSIDE.addSubnet(address, prefix, 'ipv6');
 
 /** @param {string} address */
-export const isInternalAddress = (address) => {
+const isInternalAddress = (address) => {
   const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(address)?.[1];
   return mapped ? INSIDE.check(mapped, 'ipv4') : INSIDE.check(address, net.isIPv6(address) ? 'ipv6' : 'ipv4');
 };
@@ -83,7 +83,7 @@ const publicLookup = /** @type {net.LookupFunction} */ (
  * @param {URL} url @param {{ allow?: readonly string[], signal?: AbortSignal }} options
  * @returns {Promise<http.IncomingMessage>}
  */
-function publicGet(url, { allow = [], signal }) {
+export function publicGet(url, { allow = [], signal }) {
   return new Promise((resolve, reject) => {
     if (!/^https?:$/.test(url.protocol)) return reject(new Error(`A request to ${url.protocol}`));
     const allowed = allow.includes(url.host), host = url.hostname.replace(/^\[|\]$/g, '');
@@ -175,12 +175,12 @@ export function createClients(store, { allow = [] } = {}) {
         response_types: list('response_types') ?? ['code'],
         token_endpoint_auth_method: method,
         client_id_issued_at: issuedAt,
-        ...(secret && { client_secret_issued_at: issuedAt, client_secret_expires_at: Math.floor((now + REGISTRATION_LIFETIME) / 1000) }),
+        ...(secret && { client_secret_issued_at: issuedAt, client_secret_expires_at: Math.floor((now + REGISTRATION_LIFETIME_MS) / 1000) }),
       };
       /** @type {Client} */
       const client = { clientId, redirectUris, clientName: answer.client_name, logoUri: text('logo_uri'), ...(secret && { secretDigest: digest(secret) }) };
       store.run('delete from clients where expires_at < ?', now);
-      store.run('insert into clients (client_id, data, expires_at) values (?, ?, ?)', clientId, JSON.stringify(client), now + REGISTRATION_LIFETIME);
+      store.run('insert into clients (client_id, data, expires_at) values (?, ?, ?)', clientId, JSON.stringify(client), now + REGISTRATION_LIFETIME_MS);
       return answer;
     },
 

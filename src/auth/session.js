@@ -63,15 +63,8 @@ export function profileLockHolder(dir) {
  * @returns {Promise<{ signedIn: boolean, status: number | null }>}
  */
 export async function checkSession(context, env) {
-  try {
-    const res = await context.request.get(`${env.api}/auth/me`, {
-      headers: { origin: env.app, referer: `${env.app}/` },
-      timeout: 15_000,
-    });
-    return { signedIn: res.status() === 200, status: res.status() };
-  } catch {
-    return { signedIn: false, status: null };
-  }
+  const { status } = await whoAmI(context, env);
+  return { signedIn: status === 200, status };
 }
 
 /**

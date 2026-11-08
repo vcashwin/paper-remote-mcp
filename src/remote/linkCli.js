@@ -24,7 +24,7 @@ async function readSession(dir, env) {
  * @param {{ server?: string, env?: string, profile?: string }} options
  */
 export async function linkToServer(code, options) {
-  const server = options.server || process.env.PAPER_MCP_SERVER;
+  const server = options.server;
   if (!code || !server) throw new Error('Usage: paper-remote-mcp link <CODE> --server <https://your-server> (copy the command from the link page).');
   const env = resolveEnv(options.env);
   const dir = profileDir(env.key, options.profile);

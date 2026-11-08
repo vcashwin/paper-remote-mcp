@@ -19,14 +19,15 @@ import { consentPage } from './pages.js';
 import { digest, equal, pkceChallenge, randomString } from './seal.js';
 import { safeNext } from './link.js';
 
-export const ACCESS_TOKEN_LIFETIME = 86_100;
+export const ACCESS_TOKEN_LIFETIME_S = 86_100;
 export const SCOPE = 'paper';
-const CODE_LIFETIME = 10 * 60_000;
+const CODE_LIFETIME_MS = 10 * 60_000, CONSENT_LIFETIME_MS = 10 * 60_000;
 const TOKEN_RE = /^pmcp_(at|rt|code)_([A-Za-z0-9]{16})_([A-Za-z0-9]{32})$/;
 const KEY_RE = /^pmcp_key_([A-Za-z0-9]{16})_([A-Za-z0-9]{32})$/;
+// one CSRF cookie per consent page (`…_<nonce>`), so two consent tabs open at once don't clash
 const CSRF_COOKIE = '__Host-pmcp_csrf';
 
-/** @typedef {{ responseType: string, clientId: string, clientName: string, redirectUri: string, state: string, codeChallenge: string, resource?: string, accountId: string }} AuthRequest */
+/** @typedef {{ responseType: string, clientId: string, clientName: string, redirectUri: string, state: string, codeChallenge: string, resource?: string, accountId: string, nonce: string, exp: number }} AuthRequest */
 
 /**
  * @param {{
@@ -82,7 +83,10 @@ export function createFrontDoor({ store, secrets, clients, link, origin }) {
     if (!account) return redirect(res, `${origin}/link`, { next: url.pathname + url.search });
 
     /** @type {AuthRequest} */
-    const request = { responseType: 'code', clientId, clientName: client.clientName || new URL(redirectUri).host, redirectUri, state: state ?? '', codeChallenge, ...(asked && { resource: asked }), accountId: account.id };
+    const request = {
+      responseType: 'code', clientId, clientName: client.clientName || new URL(redirectUri).host, redirectUri, state: state ?? '', codeChallenge,
+      ...(asked && { resource: asked }), accountId: account.id, nonce: randomString(8), exp: Date.now() + CONSENT_LIFETIME_MS,
+    };
     const csrf = randomString(32);
     html(
       res,
@@ -95,19 +99,20 @@ export function createFrontDoor({ store, secrets, clients, link, origin }) {
         csrf,
         switchUrl: `/link/switch?next=${encodeURIComponent(safeNext(url.pathname + url.search))}`,
       }),
-      { 'set-cookie': cookie(CSRF_COOKIE, csrf, 600) }
+      { 'set-cookie': cookie(`${CSRF_COOKIE}_${request.nonce}`, csrf, CONSENT_LIFETIME_MS / 1000) }
     );
   }
 
   /** @param {import('./http.js').Req} req @param {import('./http.js').Res} res */
   async function consent(req, res) {
     const form = await readForm(req);
-    const csrf = form.get('csrf_token') ?? '', expected = cookies(req)[CSRF_COOKIE] ?? '';
-    if (!csrf || !expected || !equal(csrf, expected)) return text(res, 400, 'Invalid CSRF token');
     /** @type {AuthRequest | undefined} */
     const request = secrets.verify('authorize', form.get('state'));
-    if (!request) return text(res, 400, 'Invalid state');
-    const clear = { 'set-cookie': cookie(CSRF_COOKIE, '', 0) };
+    if (!request || !(request.exp > Date.now())) return text(res, 400, 'This consent page expired. Connect again from your app.');
+    const csrfCookie = `${CSRF_COOKIE}_${request.nonce}`;
+    const csrf = form.get('csrf_token') ?? '', expected = cookies(req)[csrfCookie] ?? '';
+    if (!csrf || !expected || !equal(csrf, expected)) return text(res, 400, 'Invalid CSRF token');
+    const clear = { 'set-cookie': cookie(csrfCookie, '', 0) };
     const back = (/** @type {Record<string, string | undefined>} */ params) => redirect(res, request.redirectUri, { ...params, state: request.state || undefined, iss: issuer }, clear);
     if (form.get('action') !== 'approve') return back({ error: 'access_denied' });
     // The consent was for the account this browser still has linked.
@@ -120,7 +125,7 @@ export function createFrontDoor({ store, secrets, clients, link, origin }) {
     store.run(
       `insert into grants (id, account_id, client_id, client_name, scope, resource, redirect_uri, code_challenge, code_digest, code_expires_at, created_at)
        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      grantId, account.id, request.clientId, request.clientName, SCOPE, request.resource ?? null, request.redirectUri, request.codeChallenge, digest(code), now + CODE_LIFETIME, now
+      grantId, account.id, request.clientId, request.clientName, SCOPE, request.resource ?? null, request.redirectUri, request.codeChallenge, digest(code), now + CODE_LIFETIME_MS, now
     );
     back({ code });
   }
@@ -149,7 +154,7 @@ export function createFrontDoor({ store, secrets, clients, link, origin }) {
   function issue(grant, now) {
     const access = `pmcp_at_${grant.id}_${randomString(32)}`, refresh = `pmcp_rt_${grant.id}_${randomString(32)}`;
     store.run('delete from access_tokens where grant_id = ? and expires_at < ?', grant.id, now);
-    store.run('insert into access_tokens (digest, grant_id, expires_at) values (?, ?, ?)', digest(access), grant.id, now + ACCESS_TOKEN_LIFETIME * 1000);
+    store.run('insert into access_tokens (digest, grant_id, expires_at) values (?, ?, ?)', digest(access), grant.id, now + ACCESS_TOKEN_LIFETIME_S * 1000);
     return { access, refresh };
   }
 
@@ -178,8 +183,9 @@ export function createFrontDoor({ store, secrets, clients, link, origin }) {
       return void res.writeHead(200, { ...NO_STORE, ...headers }).end();
     }
     const answer = (/** @type {{ access: string, refresh: string }} */ tokens) =>
-      json(res, 200, { access_token: tokens.access, token_type: 'bearer', expires_in: ACCESS_TOKEN_LIFETIME, scope: grant.scope, refresh_token: tokens.refresh, ...(grant.resource && { resource: grant.resource }) }, headers);
+      json(res, 200, { access_token: tokens.access, token_type: 'bearer', expires_in: ACCESS_TOKEN_LIFETIME_S, scope: grant.scope, refresh_token: tokens.refresh, ...(grant.resource && { resource: grant.resource }) }, headers);
     const asked = form.get('resource');
+    const wrongResource = () => !!asked && !!grant.resource && asked !== grant.resource;
 
     if (grantType === 'authorization_code') {
       if (!grant || !grant.code_digest || !equal(grant.code_digest, digest(presented)) || grant.code_expires_at < now) return fail(400, 'invalid_grant', 'Invalid authorization code');
@@ -188,7 +194,7 @@ export function createFrontDoor({ store, secrets, clients, link, origin }) {
       const verifier = form.get('code_verifier');
       if (!verifier) return fail(400, 'invalid_request', 'code_verifier is required for PKCE');
       if (pkceChallenge(verifier) !== grant.code_challenge) return fail(400, 'invalid_grant', 'Invalid PKCE code_verifier');
-      if (asked && grant.resource && asked !== grant.resource) return fail(400, 'invalid_target', 'The requested resource does not match the authorized resource');
+      if (wrongResource()) return fail(400, 'invalid_target', 'The requested resource does not match the authorized resource');
       const tokens = issue(grant, now);
       // the code is spent with its grant's first refresh token
       const spent = store.run('update grants set code_digest = null, code_expires_at = null, refresh_digest = ? where id = ? and code_digest = ?', digest(tokens.refresh), grant.id, grant.code_digest);
@@ -198,7 +204,7 @@ export function createFrontDoor({ store, secrets, clients, link, origin }) {
     if (grantType === 'refresh_token') {
       const hash = digest(presented);
       if (!grant || (grant.refresh_digest !== hash && grant.previous_refresh_digest !== hash)) return fail(400, 'invalid_grant', 'Invalid refresh token');
-      if (asked && grant.resource && asked !== grant.resource) return fail(400, 'invalid_target', 'The requested resource does not match the authorized resource');
+      if (wrongResource()) return fail(400, 'invalid_target', 'The requested resource does not match the authorized resource');
       // A Paper session that ended can't be refreshed into: the client must connect (and link) again.
       if (!grant.linked) return fail(400, 'invalid_grant', 'The Paper session ended; connect again');
       const tokens = issue(grant, now);
@@ -232,7 +238,6 @@ export function createFrontDoor({ store, secrets, clients, link, origin }) {
 
   return {
     resource,
-    metadata,
 
     /** @param {import('./http.js').Req} req @param {import('./http.js').Res} res @param {URL} url @returns {Promise<boolean>} */
     async handle(req, res, url) {

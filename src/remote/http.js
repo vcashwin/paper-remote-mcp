@@ -75,6 +75,14 @@ export const cookie = (name, value, maxAge) => `${name}=${encodeURIComponent(val
 /** A browser POST from our own pages (CSRF): its Origin is ours. @param {Req} req @param {string} origin */
 export const sameOrigin = (req, origin) => req.headers.origin === origin;
 
+/**
+ * The client's address, for per-client limits. Behind Cloudflare (PAPER_MCP_TRUST_PROXY=cloudflare) it is the
+ * `CF-Connecting-IP` header; otherwise the socket's peer (a header anyone could set is not trusted).
+ * @param {Req} req
+ */
+export const clientIp = (req) =>
+  (process.env.PAPER_MCP_TRUST_PROXY === 'cloudflare' && String(req.headers['cf-connecting-ip'] ?? '')) || req.socket.remoteAddress || 'unknown';
+
 /** A form body. @param {Req} req */
 export const readForm = async (req) => new URLSearchParams((await readBody(req)) ?? '');
 

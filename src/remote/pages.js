@@ -23,6 +23,9 @@ table{width:100%;border-collapse:collapse;font-size:14px}td{padding:8px 4px;bord
 .code{font:600 26px ui-monospace,Menlo,monospace;letter-spacing:3px;text-align:center;padding:10px;border:1px dashed var(--line);border-radius:10px}
 [hidden]{display:none!important}`;
 
+/** A value as a JS literal safe inside <script> (no `</script>` breakout). @param {unknown} value */
+const jsLiteral = (value) => JSON.stringify(value).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+
 /** @param {string} title @param {string} body @param {{ wide?: boolean }} [o] */
 export const page = (title, body, { wide = false } = {}) =>
   `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="same-origin"><title>${esc(title)}</title><style>${STYLE}</style></head><body><main${wide ? ' class="wide"' : ''}>${body}</main></body></html>`;
@@ -68,10 +71,11 @@ export const linkPage = (o) =>
 <pre id="command">…</pre>
 </details>
 <script>
-const next = ${JSON.stringify(o.next)}, origin = ${JSON.stringify(o.origin)};
+const next = ${jsLiteral(o.next)}, origin = ${jsLiteral(o.origin)};
 const $ = (id) => document.getElementById(id);
 const post = (path, body) => fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
-let job = null, currentStep = 'email';
+let currentStep = 'email';
+const reset = () => { currentStep = 'email'; $('label').textContent = 'Paper email'; $('value').type = 'email'; $('value').autocomplete = 'username'; };
 const steps = {
   password: ['Paper password', 'password', 'current-password'],
   code: ['The code Paper just sent you', 'text', 'one-time-code'],
@@ -80,14 +84,13 @@ $('signin').onsubmit = async (e) => {
   e.preventDefault();
   $('submit').disabled = true; $('error').textContent = '';
   try {
-    const r = await post('/link/signin', { job, value: $('value').value });
-    job = r.job ?? job;
+    const r = await post('/link/signin', { start: currentStep === 'email', value: $('value').value });
     if (r.step === 'done') return location.assign(next);
-    if (r.step === 'unsupported') { $('error').textContent = 'This account signs in with Google or SSO. Use "Link from your computer" below.'; $('alt').open = true; job = null; return; }
+    if (r.step === 'unsupported') { $('error').textContent = 'This account signs in with Google or SSO. Use "Link from your computer" below.'; $('alt').open = true; reset(); return; }
     if (r.error) $('error').textContent = r.error;
     const s = steps[r.step];
     if (s) { $('label').textContent = s[0]; $('value').type = s[1]; $('value').autocomplete = s[2]; if (!r.error || r.step !== currentStep) $('value').value = ''; currentStep = r.step; $('value').focus(); }
-    if (r.step === 'email') { job = null; }
+    if (r.step === 'email') reset();
   } catch { $('error').textContent = 'Something went wrong. Try again.'; }
   finally { $('submit').disabled = false; }
 };
@@ -140,6 +143,7 @@ export const homePage = (o) => {
 <p><b>VS Code</b> — <code>.vscode/mcp.json</code></p><pre>{ "servers": { "paper": { "type": "http", "url": "${esc(url)}" } } }</pre>
 <p><b>Codex</b> — <code>~/.codex/config.toml</code></p><pre>[mcp_servers.paper]
 url = "${esc(url)}"</pre>
+<p><b>ChatGPT</b> — Settings › Connectors (developer mode) › Create › paste the URL, authentication OAuth.</p>
 <p><b>Anything that only speaks stdio</b></p><pre>npx -y mcp-remote ${esc(url)}</pre>
 <p><b>No OAuth (CI, headless agents)</b> — create a personal key on your <a href="/account">account page</a> and send <code>Authorization: Bearer pmcp_key_…</code>.</p>`,
     { wide: true }

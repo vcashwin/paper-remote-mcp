@@ -22,8 +22,19 @@ Headless agents use a personal key (`Authorization: Bearer pmcp_key_…`). See [
 
 ```bash
 PAPER_MCP_URL=http://localhost:8787 PAPER_MCP_SEAL_KEY=$(openssl rand -base64 32) npx paper-remote-mcp serve
-claude mcp add --transport http paper http://localhost:8787/mcp
 ```
+
+| Client | Add `https://<your-host>/mcp` |
+| --- | --- |
+| Claude Code | `claude mcp add --transport http paper https://<your-host>/mcp` |
+| claude.ai / Claude Desktop / mobile | Settings › Connectors › Add custom connector |
+| Cursor | `{ "mcpServers": { "paper": { "url": "https://<your-host>/mcp" } } }` in `~/.cursor/mcp.json` |
+| VS Code | `{ "servers": { "paper": { "type": "http", "url": "https://<your-host>/mcp" } } }` in `.vscode/mcp.json` |
+| Codex | `[mcp_servers.paper]` + `url = "https://<your-host>/mcp"` in `~/.codex/config.toml` |
+| ChatGPT | Settings › Connectors (developer mode) › Create › the URL, OAuth |
+| stdio-only clients | `npx -y mcp-remote https://<your-host>/mcp` |
+
+`serve` needs Node 22.5+ (`node:sqlite`); the local commands still run on Node 20.
 
 > Status: v0.1, community project. Not affiliated with or endorsed by Paper. Uses only your own authenticated account and Paper's own public endpoints.
 

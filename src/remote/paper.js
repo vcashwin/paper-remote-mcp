@@ -68,6 +68,8 @@ export function createPaper({ sessions, env: envName, maxEditors = 8, idleMs = 1
   const editors = new Map();
   /** @type {Map<string, Promise<unknown>>} */
   const locks = new Map();
+  /** Editors being started right now: they count against the cap before they exist. */
+  let starting = 0;
   /** @type {{ value: { tools: any[], instructions?: string }, at: number } | null} */
   let catalog = null;
 
@@ -96,11 +98,17 @@ export function createPaper({ sessions, env: envName, maxEditors = 8, idleMs = 1
     await editor.host.close();
   }
 
+  /** Free a slot by closing the least recently used idle editor (under its own account's lock). */
   async function makeRoom() {
-    if (editors.size < maxEditors) return;
-    const idle = [...editors].filter(([, e]) => !e.busy).sort((a, b) => a[1].usedAt - b[1].usedAt);
-    if (!idle.length) throw new PoolBusy();
-    await evict(idle[0][0]);
+    while (editors.size + starting >= maxEditors) {
+      const idle = [...editors].filter(([, e]) => !e.busy).sort((a, b) => a[1].usedAt - b[1].usedAt);
+      if (!idle.length) throw new PoolBusy();
+      const [victim] = idle[0];
+      await exclusive(victim, async () => {
+        const e = editors.get(victim);
+        if (e && !e.busy) await evict(victim);
+      });
+    }
   }
 
   /** The account's editor, started if needed, marked busy. @param {string} id */
@@ -113,18 +121,24 @@ export function createPaper({ sessions, env: envName, maxEditors = 8, idleMs = 1
     const storageState = sessions.load(id);
     if (!storageState) throw new AccountUnlinked(id);
     await makeRoom();
-    const context = await (await browser()).newContext({ storageState, viewport: VIEWPORT });
-    const host = await createEditorHost({ env: env.key, context });
+    starting++;
+    /** @type {Awaited<ReturnType<typeof createEditorHost>> | undefined} */
+    let host;
     try {
+      const context = await (await browser()).newContext({ storageState, viewport: VIEWPORT });
+      host = await createEditorHost({ env: env.key, context });
       await host.start();
     } catch (err) {
-      await host.close();
+      await host?.close();
       if (err instanceof AuthRequiredError) {
         sessions.unlink(id);
         throw new AccountUnlinked(id);
       }
       throw err;
+    } finally {
+      starting--;
     }
+    const context = host.context;
     const editor = { host, usedAt: Date.now(), checkedAt: Date.now(), busy: 1 };
     editors.set(id, editor);
     sessions.save(id, await context.storageState());
@@ -149,8 +163,12 @@ export function createPaper({ sessions, env: envName, maxEditors = 8, idleMs = 1
           editor.checkedAt = Date.now();
           sessions.save(id, await editor.host.context.storageState());
         }
-        return await fn(editor.host);
+        const result = await fn(editor.host);
+        // A failed tool may mean Paper stopped accepting the session mid-call: check (only on failures).
+        if (isErrorResult(result) && (await signedOut(editor))) throw new AuthRequiredError();
+        return result;
       } catch (err) {
+        if (!(err instanceof AuthRequiredError) && !(err instanceof AccountUnlinked) && (await signedOut(editor))) err = new AuthRequiredError();
         if (err instanceof AuthRequiredError) {
           editors.delete(id);
           await editor.host.close();
@@ -164,6 +182,11 @@ export function createPaper({ sessions, env: envName, maxEditors = 8, idleMs = 1
       }
     });
   }
+
+  /** @param {{ host: Awaited<ReturnType<typeof createEditorHost>> }} editor */
+  const signedOut = async (editor) => (await whoAmI(editor.host.context, env)).status === 401;
+  /** @param {unknown} result */
+  const isErrorResult = (result) => !!result && typeof result === 'object' && /** @type {any} */ (result).isError === true;
 
   const sweep = setInterval(() => {
     for (const [id, editor] of editors) {

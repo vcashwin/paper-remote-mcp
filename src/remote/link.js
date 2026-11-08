@@ -10,14 +10,16 @@
 // Either way the session is validated (Paper's /auth/me), sealed, and this browser
 // gets a signed account cookie (`__Host-pmcp_account`) so consent is one click next time.
 import crypto from 'node:crypto';
-import { cookie, cookies, html, json, readJson, redirect, sameOrigin } from './http.js';
+import { clientIp, cookie, cookies, html, json, readJson, redirect, sameOrigin } from './http.js';
 import { linkPage } from './pages.js';
 import { digest, equal, randomString } from './seal.js';
 import { log } from '../log.js';
 
-export const ACCOUNT_COOKIE = '__Host-pmcp_account';
-const ACCOUNT_COOKIE_AGE = 30 * 86_400;
-const CODE_LIFETIME = 10 * 60_000, JOB_LIFETIME = 10 * 60_000, MAX_JOBS = 20;
+const ACCOUNT_COOKIE = '__Host-pmcp_account', SIGNIN_COOKIE = '__Host-pmcp_signin';
+const ACCOUNT_COOKIE_MAX_AGE_S = 30 * 86_400;
+const CODE_LIFETIME_MS = 10 * 60_000, JOB_LIFETIME_MS = 10 * 60_000;
+// ponytail: in-memory caps; each sign-in holds a browser context, so both are small
+const MAX_JOBS = 20, MAX_JOBS_PER_CLIENT = 3;
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // no 0/O, 1/I/L
 const CODE_RE = /^[A-Z2-9]{4}-[A-Z2-9]{4}$/;
 const MAX_SESSION_BYTES = 512 * 1024;
@@ -32,10 +34,13 @@ export const safeNext = (next) => (next && next.startsWith('/') && !next.startsW
  * }} o
  */
 export function createLink({ store, secrets, accounts, paper, origin }) {
-  /** @type {Map<string, { signIn: import('./paper.js').SignIn, timer: NodeJS.Timeout, busy: boolean }>} */
+  /** @type {Map<string, { signIn: import('./paper.js').SignIn, timer: NodeJS.Timeout, busy: boolean, client: string }>} */
   const jobs = new Map();
 
-  const setAccount = (/** @type {string} */ id) => cookie(ACCOUNT_COOKIE, secrets.sign('account', { id, exp: Date.now() + ACCOUNT_COOKIE_AGE * 1000 }), ACCOUNT_COOKIE_AGE);
+  // The cookie names the account and the link it was made by (`v`): re-linking or disconnecting voids every older cookie.
+  const setAccount = (/** @type {string} */ id) =>
+    cookie(ACCOUNT_COOKIE, secrets.sign('account', { id, v: accounts.get(id)?.linkedAt, exp: Date.now() + ACCOUNT_COOKIE_MAX_AGE_S * 1000 }), ACCOUNT_COOKIE_MAX_AGE_S);
+  const clearSignIn = cookie(SIGNIN_COOKIE, '', 0);
   const newCode = () => {
     const raw = Array.from({ length: 8 }, () => CODE_ALPHABET[crypto.randomInt(CODE_ALPHABET.length)]).join('');
     return `${raw.slice(0, 4)}-${raw.slice(4)}`;
@@ -50,29 +55,42 @@ export function createLink({ store, secrets, accounts, paper, origin }) {
     await job.signIn.close();
   }
 
-  /** @param {import('./http.js').Req} req @param {import('./http.js').Res} res */
+  /**
+   * One step of signing in to Paper through the server. The job lives in this browser's `__Host-pmcp_signin` cookie
+   * (never in the page), so only that browser can drive it. `start: true` (the email step) begins a new one.
+   * @param {import('./http.js').Req} req @param {import('./http.js').Res} res
+   */
   async function signIn(req, res) {
     if (!sameOrigin(req, origin)) return json(res, 403, { error: 'Cross-origin request refused' });
     const body = await readJson(req);
     const value = typeof body?.value === 'string' ? body.value.trim() : '';
     if (!value || value.length > 512) return json(res, 400, { error: 'Enter a value.' });
-    let id = typeof body.job === 'string' ? body.job : null;
+    let id = cookies(req)[SIGNIN_COOKIE] || null;
+    if (body.start && id) {
+      await endJob(id);
+      id = null;
+    }
     let job = id ? jobs.get(id) : undefined;
-    if (id && !job) return json(res, 200, { step: 'email', error: 'That sign-in timed out. Start again with your email.' });
+    if (!job && !body.start) return json(res, 200, { step: 'email', error: 'That sign-in timed out. Start again with your email.' }, { 'set-cookie': clearSignIn });
+    /** @type {Record<string, string>} */
+    const started = {};
     if (!job) {
-      if (jobs.size >= MAX_JOBS) return json(res, 503, { error: 'Too many sign-ins in progress. Try again in a minute.' });
+      const client = clientIp(req);
+      if (jobs.size >= MAX_JOBS || [...jobs.values()].filter((j) => j.client === client).length >= MAX_JOBS_PER_CLIENT)
+        return json(res, 503, { error: 'Too many sign-ins in progress. Try again in a minute, or link from your computer.' });
       id = randomString(32);
-      const started = await paper.signIn().catch((err) => {
+      started['set-cookie'] = cookie(SIGNIN_COOKIE, id, JOB_LIFETIME_MS / 1000);
+      const signIn = await paper.signIn().catch((err) => {
         log.warn('Could not open Paper sign-in:', err instanceof Error ? err.message : err);
         return null;
       });
-      if (!started) return json(res, 502, { error: "Couldn't reach Paper's sign-in page. Try again, or link from your computer." });
+      if (!signIn) return json(res, 502, { error: "Couldn't reach Paper's sign-in page. Try again, or link from your computer." });
       const jobId = id;
-      job = { signIn: started, busy: false, timer: setTimeout(() => endJob(jobId), JOB_LIFETIME) };
+      job = { signIn, busy: false, client, timer: setTimeout(() => endJob(jobId), JOB_LIFETIME_MS) };
       job.timer.unref();
       jobs.set(id, job);
     }
-    if (job.busy) return json(res, 409, { job: id, error: 'Still working on the last step…' });
+    if (job.busy) return json(res, 409, { error: 'Still working on the last step…' });
     job.busy = true;
     try {
       const step = await job.signIn.submit(value);
@@ -81,14 +99,17 @@ export function createLink({ store, secrets, accounts, paper, origin }) {
         const accountId = accounts.link(step.user, step.storageState);
         await paper.drop(accountId); // a re-link replaces any warm editor on the old session
         log.info('Paper account linked by sign-in.');
-        return json(res, 200, { step: 'done' }, { 'set-cookie': setAccount(accountId) });
+        return json(res, 200, { step: 'done' }, { 'set-cookie': [setAccount(accountId), clearSignIn] });
       }
-      if (step.step === 'unsupported') await endJob(/** @type {string} */ (id));
-      return json(res, 200, { job: id, step: step.step, ...(step.error && { error: step.error }) });
+      if (step.step === 'unsupported') {
+        await endJob(/** @type {string} */ (id));
+        return json(res, 200, { step: 'unsupported' }, { 'set-cookie': clearSignIn });
+      }
+      return json(res, 200, { step: step.step, ...(step.error && { error: step.error }) }, started);
     } catch (err) {
       log.warn('Paper sign-in step failed:', err instanceof Error ? err.message : err);
       await endJob(/** @type {string} */ (id));
-      return json(res, 200, { step: 'email', error: 'Paper sign-in failed. Start again, or link from your computer.' });
+      return json(res, 200, { step: 'email', error: 'Paper sign-in failed. Start again, or link from your computer.' }, { 'set-cookie': clearSignIn });
     } finally {
       job.busy = false;
     }
@@ -99,8 +120,8 @@ export function createLink({ store, secrets, accounts, paper, origin }) {
     if (!sameOrigin(req, origin)) return json(res, 403, { error: 'Cross-origin request refused' });
     const code = newCode(), poll = randomString(32), now = Date.now();
     store.run('delete from link_codes where expires_at < ?', now);
-    store.run('insert into link_codes (code, poll_digest, expires_at) values (?, ?, ?)', code, digest(poll), now + CODE_LIFETIME);
-    json(res, 200, { code, poll, expiresIn: CODE_LIFETIME / 1000 });
+    store.run('insert into link_codes (code, poll_digest, expires_at) values (?, ?, ?)', code, digest(poll), now + CODE_LIFETIME_MS);
+    json(res, 200, { code, poll, expiresIn: CODE_LIFETIME_MS / 1000 });
   }
 
   /** The page's poll: once a session was handed over for its code, this browser gets the account. */
@@ -140,13 +161,14 @@ export function createLink({ store, secrets, accounts, paper, origin }) {
     /** The account this browser linked, if it is still linked. @param {import('./http.js').Req} req */
     current(req) {
       const signed = secrets.verify('account', cookies(req)[ACCOUNT_COOKIE]);
-      const claim = /** @type {{ id?: string, exp?: number } | undefined} */ (signed);
+      const claim = /** @type {{ id?: string, v?: number, exp?: number } | undefined} */ (signed);
       if (!claim?.id || !claim.exp || claim.exp < Date.now()) return undefined;
       const account = accounts.get(claim.id);
-      return account?.linked ? account : undefined;
+      return account?.linked && account.linkedAt === claim.v ? account : undefined;
     },
 
     clearCookie: () => cookie(ACCOUNT_COOKIE, '', 0),
+
 
     /** @param {import('./http.js').Req} req @param {import('./http.js').Res} res @param {URL} url @returns {Promise<boolean>} */
     async handle(req, res, url) {

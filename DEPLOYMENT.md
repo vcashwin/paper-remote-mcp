@@ -43,6 +43,7 @@ Every setting is an environment variable; copy [`deploy/paper-mcp.env.example`](
 | `PAPER_MCP_MAX_EDITORS` | no | `8` | The most warm editors (Paper accounts) at once. Past it, the least recently used idle editor closes. When all are busy, a call answers "at capacity". |
 | `PAPER_MCP_IDLE_MINUTES` | no | `10` | An editor unused this long closes, and its renewed Paper cookie is saved. |
 | `PAPER_MCP_ENV` | no | `production` | `production` (app.paper.design) or `staging`. |
+| `PAPER_MCP_TRUST_PROXY` | behind Cloudflare | — | Set it to `cloudflare` to read the client address from `CF-Connecting-IP`. The per-client sign-in limit (3 at once) needs this when behind the tunnel; otherwise every user shares the tunnel's address. Leave it unset when not behind Cloudflare, because anyone can forge the header. |
 | `PAPER_MCP_LOG` | no | `info` | `silent`, `error`, `warn`, `info` or `debug`. At `info` and below, logs never contain tokens, cookies, passwords or codes (`debug` adds the Paper page's own console output). |
 | `TUNNEL_TOKEN` | with the tunnel | — | The Cloudflare Tunnel token, read by the optional `cloudflared` service. |
 
@@ -117,6 +118,7 @@ For local testing, use `PAPER_MCP_URL=http://localhost:8787` and add `http://loc
 | Cursor | `~/.cursor/mcp.json`: `{ "mcpServers": { "paper": { "url": "https://paper-mcp.example.com/mcp" } } }` |
 | VS Code | `.vscode/mcp.json`: `{ "servers": { "paper": { "type": "http", "url": "https://paper-mcp.example.com/mcp" } } }` |
 | Codex | `~/.codex/config.toml`: `[mcp_servers.paper]` then `url = "https://paper-mcp.example.com/mcp"` |
+| ChatGPT | Settings › Connectors (developer mode) › Create › paste the URL, authentication **OAuth** |
 | stdio-only clients | `npx -y mcp-remote https://paper-mcp.example.com/mcp` |
 | CI and headless agents (no OAuth) | Create a key at `/account`, then send `Authorization: Bearer pmcp_key_…`. With Claude Code: `claude mcp add --transport http paper <url>/mcp --header "Authorization: Bearer pmcp_key_…"` |
 

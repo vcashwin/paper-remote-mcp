@@ -12,6 +12,7 @@ import { createRemoteServer } from '../src/remote/server.js';
 import { createSecrets } from '../src/remote/seal.js';
 import { openStore } from '../src/remote/store.js';
 import { AccountUnlinked } from '../src/remote/paper.js';
+import { publicGet } from '../src/remote/clients.js';
 
 const USER = { id: 'user_01PAPER', email: 'ada@example.com' };
 const GOOD = { cookies: [{ name: 'session', value: 'good', domain: '.paper.design', path: '/', expires: -1, httpOnly: true, secure: true, sameSite: 'Lax' }], origins: [] };
@@ -192,12 +193,16 @@ test('link codes: claimable once, only the creating browser gets the account', a
 
 test('sign in through the server: email → password, with Paper\'s error on a wrong password', async () => {
   const b = browser();
-  let r = await (await b.postJson('/link/signin', { value: USER.email })).json();
+  let r = await (await b.postJson('/link/signin', { start: true, value: USER.email })).json();
   assert.equal(r.step, 'password');
-  r = await (await b.postJson('/link/signin', { job: r.job, value: 'wrong' })).json();
+  assert.ok(b.jar.has('__Host-pmcp_signin'), 'the job lives in a cookie, not the page');
+  // another browser can't drive this job
+  const stranger = browser();
+  assert.match((await (await stranger.postJson('/link/signin', { value: 'right' })).json()).error, /timed out/);
+  r = await (await b.postJson('/link/signin', { value: 'wrong' })).json();
   assert.equal(r.step, 'password');
   assert.equal(r.error, 'Invalid email or password');
-  r = await (await b.postJson('/link/signin', { job: r.job, value: 'right' })).json();
+  r = await (await b.postJson('/link/signin', { value: 'right' })).json();
   assert.equal(r.step, 'done');
   assert.ok(b.jar.has('__Host-pmcp_account'));
 });
@@ -341,6 +346,15 @@ test('the real MCP SDK client connects end to end: discovery → DCR → authori
   const result = await connected.callTool({ name: 'get_basic_info', arguments: {} });
   assert.equal(result.content[0].text, `get_basic_info ok for ${USER.id}`);
   await connected.close();
+
+  // the access token expires: the SDK refreshes with its refresh token and carries on
+  const before = saved.tokens.access_token;
+  store.run('update access_tokens set expires_at = 0');
+  const again = new Client({ name: 'sdk-test', version: '1.0.0' });
+  await again.connect(new StreamableHTTPClientTransport(new URL(`${origin}/mcp`), { authProvider: provider }));
+  assert.equal((await again.callTool({ name: 'get_basic_info', arguments: {} })).content[0].text, `get_basic_info ok for ${USER.id}`);
+  assert.notEqual(saved.tokens.access_token, before, 'refreshed');
+  await again.close();
 });
 
 test('client ID metadata documents: a valid one works without registering; mismatched or internal ones do not', async () => {
@@ -357,4 +371,49 @@ test('client ID metadata documents: a valid one works without registering; misma
   const q = (client_id) => new URLSearchParams({ response_type: 'code', client_id, redirect_uri: 'http://localhost/cb', code_challenge: challenge(verifier), code_challenge_method: 'S256' });
   assert.equal((await b.go(`/authorize?${q(mismatched)}`)).status, 400, 'a document must name itself');
   assert.equal((await b.go(`/authorize?${q(`https://127.0.0.1:${docs.address().port}/client.json`)}`)).status, 400, 'internal addresses are never fetched');
+});
+
+test('the link page escapes `next` (no script injection)', async () => {
+  const evil = '/</script><script>alert(1)</script>';
+  const body = await (await fetch(`${origin}/link?next=${encodeURIComponent(evil)}`)).text();
+  assert.ok(!body.includes('</script><script>alert(1)'));
+  assert.ok(body.includes('\\u003c/script>'));
+});
+
+test('a malformed account cookie is ignored, not a 500', async () => {
+  const res = await fetch(`${origin}/account`, { redirect: 'manual', headers: { cookie: `__Host-pmcp_account=${encodeURIComponent('e30.' + 'é'.repeat(43))}` } });
+  assert.equal(res.status, 302);
+});
+
+test('two consent pages open at once both work', async () => {
+  const { client_id } = await register();
+  const b = browser();
+  await b.linkByCode();
+  const open = async () => {
+    const q = new URLSearchParams({ response_type: 'code', client_id, redirect_uri: 'http://localhost:3000/cb', code_challenge: challenge('d'.repeat(43)), code_challenge_method: 'S256' });
+    const body = await (await b.go(`/authorize?${q}`)).text();
+    return { state: /name="state" value="([^"]+)"/.exec(body)[1], csrf: /name="csrf_token" value="([^"]+)"/.exec(body)[1] };
+  };
+  const first = await open(), second = await open();
+  for (const page of [first, second]) {
+    const r = await b.go('/authorize', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ state: page.state, csrf_token: page.csrf, action: 'approve' }) });
+    assert.ok(new URL(r.headers.get('location')).searchParams.get('code'));
+  }
+});
+
+test('disconnecting voids the account cookie in every browser, even after re-linking', async () => {
+  const a = browser(), b = browser();
+  await a.linkByCode();
+  await b.linkByCode(); // re-linking voids a's cookie already
+  assert.equal((await a.go('/account')).status, 302);
+  assert.equal((await b.go('/account')).status, 200);
+  await b.go('/account', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ action: 'disconnect' }) });
+  const c = browser();
+  await c.linkByCode();
+  assert.equal((await b.go('/account')).status, 302, 'b\'s old cookie no longer opens the account');
+});
+
+test('metadata documents are only fetched from public addresses, names resolved included', async () => {
+  await assert.rejects(publicGet(new URL(`http://localhost:${docs.address().port}/client.json`), {}), /not public/);
+  await assert.rejects(publicGet(new URL(`http://127.0.0.1:${docs.address().port}/client.json`), {}), /not public/);
 });

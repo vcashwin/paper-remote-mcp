@@ -18,7 +18,10 @@ export function randomString(length) {
 export const digest = (value) => crypto.createHash('sha256').update(value).digest('hex');
 
 /** Constant-time string equality. @param {string} a @param {string} b */
-export const equal = (a, b) => a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+export const equal = (a, b) => {
+  const x = Buffer.from(a), y = Buffer.from(b);
+  return x.length === y.length && crypto.timingSafeEqual(x, y);
+};
 
 /** @param {string} verifier PKCE S256 */
 export const pkceChallenge = (verifier) => crypto.createHash('sha256').update(verifier).digest('base64url');

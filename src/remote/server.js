@@ -26,13 +26,13 @@ const MAX_MCP_BODY = 4 * 1024 * 1024;
 /**
  * @param {{
  *   store: import('./store.js').Store, secrets: import('./seal.js').Secrets,
- *   paper: import('./paper.js').Paper | ((sessions: import('./paper.js').Sessions) => import('./paper.js').Paper),
+ *   paper: (sessions: import('./paper.js').Sessions) => import('./paper.js').Paper,
  *   origin: string, allow?: string[],
  * }} o
  */
-export function createRemoteServer({ store, secrets, paper: paperOrFactory, origin, allow = [] }) {
+export function createRemoteServer({ store, secrets, paper: makePaper, origin, allow = [] }) {
   const accounts = createAccounts(store, secrets);
-  const paper = typeof paperOrFactory === 'function' ? paperOrFactory(accounts.sessions) : paperOrFactory;
+  const paper = makePaper(accounts.sessions);
   const clients = createClients(store, { allow });
   const link = createLink({ store, secrets, accounts, paper, origin });
   const frontDoor = createFrontDoor({ store, secrets, clients, link, origin });
