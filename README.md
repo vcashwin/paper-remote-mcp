@@ -16,7 +16,7 @@ claude mcp add paper -- npx -y paper-remote-mcp mcp
 
 ## Remote server (OAuth, nothing to install)
 
-`remote/` is a hosted way in: one URL, OAuth in the browser, no `npx`, no Chromium, no desktop app. It is a stateless OAuth front door for **Paper's own hosted MCP server** (`https://mcp.paper.design`, signed in through `login.paper.design`), with the consent page in linear-re's design system.
+`remote/` is a hosted way in: one URL, OAuth in the browser, no `npx`, no Chromium, no desktop app. It is a stateless OAuth front door for **Paper's own hosted MCP server** (`https://mcp.paper.design`, signed in through `login.paper.design`), with the consent page in Linefold's design system.
 
 ```bash
 claude mcp add --transport http paper https://<your-worker>/mcp
@@ -43,6 +43,7 @@ Trade-offs of being stateless:
 - No server-side revocation. To disconnect, remove the server from your client, or end the session in Paper.
 - A code can be replayed within its 60 s, but it is useless without the client's PKCE verifier.
 - Rotating `SEAL_KEY` signs everyone out.
+- Paper's refresh tokens are single use and nothing remembers the last one, so two refreshes racing (or a lost refresh response) end that connection; the client asks you to sign in again.
 
 **Deploy** (Cloudflare Workers, free tier is enough):
 
