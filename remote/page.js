@@ -60,10 +60,10 @@ export function consentPage({ clientName, redirectUri, logoUri, clientHost, stat
         `Continuing takes you to Paper's own sign-in page. ${name} then uses Paper's MCP tools through this server, as you.`,
         '_muted_1ajf8_20',
       ) +
-      span(
+      `<div class="_secure">${LOCK}${span(
         'Nothing is stored here: your Paper session travels encrypted inside the token given to the client, and only this server can read it. While your tools run, a container holds it in memory.',
         '_muted_1ajf8_20',
-      ) +
+      )}</div>` +
       `</div>` +
       `<div class="_actions_1ajf8_32"><button type="submit" name="action" value="deny" class="_base_19pyx_4 _secondary_19pyx_49 _normal_19pyx_116 _padText_19pyx_122 _overlay_19pyx_103">Cancel</button>` +
       `<button type="submit" name="action" value="approve" class="_base_19pyx_4 _primary_19pyx_48 _normal_19pyx_116 _padText_19pyx_122">Continue</button></div>` +
