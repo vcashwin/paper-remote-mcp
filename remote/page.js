@@ -8,10 +8,12 @@ const escape = (value) => value.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)}
 
 // Paper's own app icon, hot-linked like the client logos on the consent page (no-referrer pages; chosen by the owner).
 const MARK = `<img src="https://paper.design/logos/app-icons/Paper%20App%20Icon%20512.png" alt="Paper">`;
+// SmallLock from the Linefold sprite, for the security note.
+const LOCK = `<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" class="_icon_5lfxx_2" style="--icon-default-color: var(--color-label-muted); flex-shrink: 0; margin-top: 1px;"><path d="M5 7.08V6a3 3 0 0 1 6 0v1.08a1.5 1.5 0 0 1 1 1.415v3a1.5 1.5 0 0 1-1.5 1.5h-5a1.5 1.5 0 0 1-1.5-1.5v-3A1.5 1.5 0 0 1 5 7.08M9.5 6a1.5 1.5 0 0 0-3 0v.995h3zM8 10.995a1 1 0 1 0 0-2 1 1 0 0 0 0 2"/></svg>`;
 const ARROWS = `<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" class="_icon_5lfxx_2" style="--icon-default-color: var(--color-label-muted);"><path d="M5.378 7.5a.6.6 0 0 1 .6.6l-.002 1.774c2.375.224 8.027.917 8.027 1.328 0 .311-2.675.796-8.024 1.453l-.001 1.747a.6.6 0 0 1-.992.454L1.14 11.548a.4.4 0 0 1 0-.607l3.848-3.297a.6.6 0 0 1 .39-.144Zm4.79-6.291a.6.6 0 0 1 .846-.064l3.847 3.309a.4.4 0 0 1 0 .607l-3.848 3.296a.6.6 0 0 1-.99-.455V6.128C7.65 5.904 1.998 5.21 1.998 4.799c0-.31 2.675-.795 8.024-1.452l.001-1.747a.6.6 0 0 1 .145-.391Z"/></svg>`;
 const PLACEHOLDER = `<svg width="56" height="56" viewBox="0 0 48 48" aria-hidden="true"><g stroke="var(--color-bg-border)" stroke-width="0.5" fill="none"><rect width="48" height="48" fill="var(--color-bg-shade)" stroke="none"/><path d="M24 0V48M33 0V48M15 0V48M0 24H48M0 33H48M0 15H48M48 0L0 48M0 0L48 48"/><circle cx="24" cy="24" r="18"/><circle cx="24" cy="24" r="13"/></g></svg>`;
 // Additions on the same tokens: the landing page's code line and list, the sign-in page's field, steps and error line.
-const EXTRA = `._input{font:inherit;font-size:var(--font-size-small);color:var(--color-label-title);background:var(--color-bg-base);border:var(--thin-pixel) solid var(--color-bg-border);border-radius:6px;padding:9px 12px;width:100%;box-sizing:border-box}._input:focus{outline:2px solid var(--color-control-primary);outline-offset:-1px}._error{color:#e5484d}._code{font-family:var(--font-monospace,ui-monospace,Menlo,monospace);font-size:var(--font-size-small);color:var(--color-label-title);background:var(--color-bg-shade);border:var(--thin-pixel) solid var(--color-bg-border);border-radius:6px;padding:10px 12px;white-space:pre-wrap;overflow-wrap:anywhere;user-select:all}._list{display:flex;flex-direction:column;gap:12px;align-self:stretch;min-width:0}._steps{display:flex;flex-direction:column;gap:10px;width:100%;counter-reset:step}._step{display:flex;gap:10px;align-items:center;counter-increment:step}._step::before{content:counter(step);flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border:var(--thin-pixel) solid var(--color-bg-border);border-radius:9999px;font-size:11px;font-weight:var(--font-weight-medium);color:var(--color-label-muted)}`;
+const EXTRA = `._input{font:inherit;font-size:var(--font-size-small);color:var(--color-label-title);background:var(--color-bg-base);border:var(--thin-pixel) solid var(--color-bg-border);border-radius:6px;padding:9px 12px;width:100%;box-sizing:border-box}._input:focus{outline:2px solid var(--color-control-primary);outline-offset:-1px}._error{color:#e5484d}._code{font-family:var(--font-monospace,ui-monospace,Menlo,monospace);font-size:var(--font-size-small);color:var(--color-label-title);background:var(--color-bg-shade);border:var(--thin-pixel) solid var(--color-bg-border);border-radius:6px;padding:10px 12px;white-space:pre-wrap;overflow-wrap:anywhere;user-select:all}._list{display:flex;flex-direction:column;gap:12px;align-self:stretch;min-width:0}._steps{display:flex;flex-direction:column;gap:10px;width:100%;counter-reset:step}._step{display:flex;gap:10px;align-items:center;counter-increment:step}._step::before{content:counter(step);flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border:var(--thin-pixel) solid var(--color-bg-border);border-radius:9999px;font-size:11px;font-weight:var(--font-weight-medium);color:var(--color-label-muted)}._secure{display:flex;gap:7px;align-items:flex-start;width:100%}`;
 
 /** @param {string} title @param {string} body */
 const html = (title, body) =>
@@ -59,7 +61,7 @@ export function consentPage({ clientName, redirectUri, logoUri, clientHost, stat
         '_muted_1ajf8_20',
       ) +
       span(
-        'Nothing is stored here: your Paper session travels encrypted inside the token given to the client, and only this server can read it. While your tools run, a container holds it in memory. Paper Remote MCP is not affiliated with Paper.',
+        'Nothing is stored here: your Paper session travels encrypted inside the token given to the client, and only this server can read it. While your tools run, a container holds it in memory.',
         '_muted_1ajf8_20',
       ) +
       `</div>` +
@@ -94,7 +96,7 @@ export function signInPage({ flow, paperUrl, message, nonce }) {
         : '') +
       `<div class="_actions_1ajf8_32"><a href="${escape(paperUrl)}" target="_blank" rel="noopener noreferrer" class="_base_19pyx_4 _secondary_19pyx_49 _normal_19pyx_116 _padText_19pyx_122 _overlay_19pyx_103">Open Paper sign-in</a></div>` +
       `<label class="_details_1ajf8_21">${span('The address of Paper\'s "Opening Paper…" page', '_medium_1ajf8_19 _muted_1ajf8_20')}<input class="_input" type="text" name="link" placeholder="https://workers.paper.design/auth/desktop-redirect?…" autocomplete="off" spellcheck="false" required autofocus></label>` +
-      `<div class="_statement_1ajf8_28">${span('You sign in on Paper\'s own page: this server never sees your Paper password or sign-in code, and stores nothing. Paper Remote MCP is not affiliated with Paper.', '_muted_1ajf8_20')}</div>` +
+      `<div class="_statement_1ajf8_28"><div class="_secure">${LOCK}${span('You sign in on Paper\'s own page: this server never saves your auth — no password, no code, nothing stored.', '_muted_1ajf8_20')}</div></div>` +
       `<div class="_actions_1ajf8_32"><button type="submit" class="_base_19pyx_4 _primary_19pyx_48 _normal_19pyx_116 _padText_19pyx_122">Continue</button></div>` +
       `</div></div></div></form>` +
       `<script nonce="${escape(nonce)}">document.forms[0].addEventListener('submit',function(){var b=this.querySelector('button');b.disabled=true;b.setAttribute('aria-busy','true');b.textContent='Signing in…'})</script>`,
@@ -120,7 +122,7 @@ export function homePage(mcpUrl) {
       step('Claude Code', `claude mcp add --transport http paper ${url}`) +
       step('Cursor / VS Code (mcp.json)', escape(JSON.stringify({ mcpServers: { paper: { url: mcpUrl } } }))) +
       `</div>` +
-      `<div class="_statement_1ajf8_28">${span('Your client opens a browser to sign in with Paper the first time. Paper Remote MCP is not affiliated with Paper.', '_muted_1ajf8_20')}</div>` +
+      `<div class="_statement_1ajf8_28">${span('Your client opens a browser to sign in with Paper the first time.', '_muted_1ajf8_20')}</div>` +
       `</div></div></div>`,
   );
 }
