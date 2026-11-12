@@ -41,7 +41,9 @@ first-party clients, so sign-in uses **Paper's own OAuth, the way Paper Desktop 
 1. After consent, our page opens Paper's hosted sign-in (`api.workos.com/user_management/authorize` with Paper
    Desktop's public first-party client and a fresh PKCE pair, redirecting to Paper's `desktop-redirect` page).
 2. The user signs in on Paper's page — no password or emailed code ever touches this server — and Paper shows an
-   "Opening Paper…" page whose `paper://auth/callback?code=…` link the user pastes back.
+   "Opening Paper…" page whose address (it carries the one-time code) the user pastes back. The bounce to
+   `paper://` can't reach a website, and the authorization server pins the redirect URI's query to `protocol=paper`,
+   so this copy is the one manual step.
 3. The Worker exchanges the code with Paper (`POST api.paper.design/auth/desktop-callback`, with the PKCE verifier
    that never left the sealed flow) for `sealedSession` + `cosmeticInfo`, mints the two cookies, and confirms the
    session with `/auth/me` (also who the session is for).

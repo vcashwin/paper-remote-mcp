@@ -454,7 +454,7 @@ async function signIn(/** @type {Request} */ request, /** @type {URL} */ url, /*
 
   const code = codeFromPaste(form.get('link') ?? '');
   if (!code) {
-    return again('That does not look like Paper\u2019s link. On the \u201cOpening Paper\u2026\u201d page, copy the \u201cclick here\u201d link and paste it whole.');
+    return again('That does not look like Paper\u2019s page address. On the \u201cOpening Paper\u2026\u201d page, copy the whole address from the address bar and paste it here.');
   }
   const exchanged = await paperExchange(code, job.v);
   if (exchanged === undefined) return again(`${UNAVAILABLE}. Try again.`);

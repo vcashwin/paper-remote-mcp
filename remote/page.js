@@ -71,7 +71,7 @@ export function consentPage({ clientName, redirectUri, logoUri, clientHost, stat
 
 /**
  * The sign-in page: Paper's own hosted sign-in (opened in a new tab), then the one manual step — Paper's
- * "Opening Paper…" page shows a `paper://auth/callback?code=…` link, which the user pastes here. No Paper
+ * "Opening Paper…" page has the code in its address bar (⌘L ⌘C), which the user pastes here. No Paper
  * password or emailed code ever touches this server. Continue shows it's working while Paper answers: the
  * page's one script, allowed by `nonce`.
  * @param {{ flow: string, paperUrl: string, message?: string, nonce: string }} p
@@ -86,14 +86,14 @@ export function signInPage({ flow, paperUrl, message, nonce }) {
       `<div class="_heading_1ajf8_16">${span('Sign in with Paper', '_title_1ajf8_18')}</div>` +
       `<div class="_steps">` +
       step('Open Paper\'s own sign-in page and sign in as usual') +
-      step('Paper then shows an <strong>Opening Paper…</strong> page — copy its <strong>click here</strong> link') +
-      step('Paste the link below') +
+      step('Paper then shows an <strong>Opening Paper…</strong> page — copy the address from its address bar') +
+      step('Paste it below') +
       `</div>` +
       (message
         ? `<div class="_statement_1ajf8_28" role="alert">${span(escape(String(message)), '_error')}</div>`
         : '') +
       `<div class="_actions_1ajf8_32"><a href="${escape(paperUrl)}" target="_blank" rel="noopener noreferrer" class="_base_19pyx_4 _secondary_19pyx_49 _normal_19pyx_116 _padText_19pyx_122 _overlay_19pyx_103">Open Paper sign-in</a></div>` +
-      `<label class="_details_1ajf8_21">${span('The link from Paper\'s page', '_medium_1ajf8_19 _muted_1ajf8_20')}<input class="_input" type="text" name="link" placeholder="paper://auth/callback?code=…" autocomplete="off" spellcheck="false" required autofocus></label>` +
+      `<label class="_details_1ajf8_21">${span('The address of Paper\'s "Opening Paper…" page', '_medium_1ajf8_19 _muted_1ajf8_20')}<input class="_input" type="text" name="link" placeholder="https://workers.paper.design/auth/desktop-redirect?…" autocomplete="off" spellcheck="false" required autofocus></label>` +
       `<div class="_statement_1ajf8_28">${span('You sign in on Paper\'s own page: this server never sees your Paper password or sign-in code, and stores nothing. Paper Remote MCP is not affiliated with Paper.', '_muted_1ajf8_20')}</div>` +
       `<div class="_actions_1ajf8_32"><button type="submit" class="_base_19pyx_4 _primary_19pyx_48 _normal_19pyx_116 _padText_19pyx_122">Continue</button></div>` +
       `</div></div></div></form>` +
