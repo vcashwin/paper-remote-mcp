@@ -377,7 +377,7 @@ test('sign-in: the paste accepts a bare code; garbage, refused and dead Paper al
 
   const s = await startSignIn();
   const garbage = await (await answer(s, { link: 'https://example.com/nope' })).text();
-  assert.match(garbage, /does not look like Paper’s link/);
+  assert.match(garbage, /does not look like Paper’s page address/);
   assert.match(garbage, /name="link"/, 'the paste box again');
   const used = await (await answer(s, { link: 'paper://auth/callback?code=used-code' })).text();
   assert.match(used, /Paper refused that link/);
