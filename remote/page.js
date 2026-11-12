@@ -19,11 +19,19 @@ const html = (title, body) =>
 
 const span = (/** @type {string} */ s, cls = '') => `<span class="_text_1ajf8_17 ${cls}">${s}</span>`;
 
+/** Where a redirect URI sends the browser: its host, and "this computer" for a loopback one @param {string} uri */
+function destination(uri) {
+  const { host, hostname } = new URL(uri);
+  return ['localhost', '127.0.0.1', '[::1]'].includes(hostname) ? `${host} (this computer)` : host || uri;
+}
+
 /**
- * The consent page `/authorize` shows: the client asking, where its codes go, and what approving does.
- * @param {{ clientName: string, redirectUri: string, logoUri?: string, state: string, csrfToken: string }} p
+ * The consent page `/authorize` shows: the client asking, where its codes go, and what approving does. A client with
+ * a metadata document (CIMD) shows that document's host; a registered one (DCR) could be anyone, and says so.
+ * @param {{ clientName: string, redirectUri: string, logoUri?: string, clientHost?: string, state: string,
+ *   csrfToken: string }} p
  */
-export function consentPage({ clientName, redirectUri, logoUri, state, csrfToken }) {
+export function consentPage({ clientName, redirectUri, logoUri, clientHost, state, csrfToken }) {
   const name = escape(clientName);
   const logo = logoUri && /^https:\/\//.test(logoUri) ? `<img src="${escape(logoUri)}" alt="">` : PLACEHOLDER;
   const row = (/** @type {string} */ key, /** @type {string} */ value, wrap = '') =>
@@ -34,8 +42,14 @@ export function consentPage({ clientName, redirectUri, logoUri, state, csrfToken
       `<div class="_page_1ajf8_5"><div class="_center_1ajf8_7"><div class="_card_1ajf8_8">` +
       `<div class="_logos_1ajf8_11"><div class="_logo_1ajf8_11 _bordered_1ajf8_13"><span>${logo}</span></div>${ARROWS}<div class="_logo_1ajf8_11">${MARK}</div></div>` +
       `<div class="_heading_1ajf8_16">${span(`<strong>${name}</strong> wants to use your Paper account`, '_title_1ajf8_18')}</div>` +
+      `<div class="_statement_1ajf8_28">${span(`Returns you to <strong>${escape(destination(redirectUri))}</strong>`, '_medium_1ajf8_19')}` +
+      (clientHost
+        ? span(`Client published by <strong>${escape(clientHost)}</strong>`, '_muted_1ajf8_20')
+        : `<span role="alert">${span(`Unverified app — only continue if you started this from <strong>${name}</strong>.`, '_error')}</span>`) +
+      `</div>` +
       `<div class="_details_1ajf8_21">${span('Details', '_medium_1ajf8_19 _muted_1ajf8_20')}<div class="theme-elevated" style="display: contents;"><section class="_table_1ajf8_22">` +
       row('Name:', name) +
+      (clientHost ? row('Client ID host:', escape(clientHost)) : '') +
       row('Redirect URI:', escape(redirectUri), '_wrap_1ajf8_27') +
       row('Access:', 'Read and write your Paper files') +
       `</section></div></div>` +
@@ -75,10 +89,11 @@ const SIGN_IN = {
 
 /**
  * The sign-in page, one step at a time: the email first, then what Paper asks for (its password, or the code it
- * emailed), with Paper's own error text when it has one.
- * @param {{ flow: string, step: 'email' | 'password' | 'code', email?: string, message?: string }} p
+ * emailed), with Paper's own error text when it has one. Continue shows it's working while Paper answers (up to a
+ * minute): the page's one script, allowed by `nonce`.
+ * @param {{ flow: string, step: 'email' | 'password' | 'code', email?: string, message?: string, nonce: string }} p
  */
-export function signInPage({ flow, step, email = '', message }) {
+export function signInPage({ flow, step, email = '', message, nonce }) {
   const { title, label, input } = SIGN_IN[step];
   const value = step === 'email' ? ` value="${escape(email)}"` : '';
   return html(
@@ -97,7 +112,8 @@ export function signInPage({ flow, step, email = '', message }) {
       `<label class="_details_1ajf8_21">${span(label, '_medium_1ajf8_19 _muted_1ajf8_20')}<input class="_input" ${input}${value} required autofocus></label>` +
       `<div class="_statement_1ajf8_28">${span("This server signs in to Paper's own sign-in page for you, with what you type here. It never stores your password or code. Paper Remote MCP is not affiliated with Paper.", '_muted_1ajf8_20')}</div>` +
       `<div class="_actions_1ajf8_32"><button type="submit" class="_base_19pyx_4 _primary_19pyx_48 _normal_19pyx_116 _padText_19pyx_122">Continue</button></div>` +
-      `</div></div></div></form>`,
+      `</div></div></div></form>` +
+      `<script nonce="${escape(nonce)}">document.forms[0].addEventListener('submit',function(){var b=this.querySelector('button');b.disabled=true;b.setAttribute('aria-busy','true');b.textContent='Signing in…'})</script>`,
   );
 }
 

@@ -11,11 +11,12 @@
 //   state            the client's authorization request (10 min)      /authorize → consent page → /authorize (POST)
 //   flow             that request + a sign-in job id + a nonce (10 min) sign-in pages → /signin
 //   code             Paper session cookies + user + the request (60 s) /signin → the client → /token
-//   access token     Paper session cookies, user id, grant id (24 h)    /mcp
-//   refresh token    the same + the client id                          /token: resealed with the latest session
+//   access token     Paper session cookies, user id, grant id (1 h)     /mcp
+//   refresh token    the same + the client id (30 days)                 /token: checked with Paper, renewals resealed
 //
-// Tools run in the PaperAccount Durable Object's container (one per Paper user), which keeps Paper's renewed session
-// in memory only.
+// Each request uses only the session sealed in its own token. A refresh asks Paper (/auth/me) whether that session is
+// still signed in, and seals the cookie renewals Paper sends back into the new tokens: signing out in Paper ends
+// every token within the hour. Tools run in the PaperAccount Durable Object's container (one per Paper user).
 //
 //   GET  /                                             landing page
 //   GET  /.well-known/oauth-protected-resource[/mcp]   RFC 9728
@@ -26,16 +27,22 @@
 //   POST /token                                        authorization_code, refresh_token
 //   POST /mcp                                          Streamable HTTP (JSON responses)
 import { Container } from '@cloudflare/containers';
+import { cookieHeader, paperCookies } from '../runtime/paper.js';
 import { consentPage, homePage, signInPage } from './page.js';
 
 const REQUEST_TTL = 600,
   CODE_TTL = 60,
-  ACCESS_TTL = 86_400,
+  ACCESS_TTL = 3_600,
+  REFRESH_TTL = 30 * 86_400,
+  CATALOG_TTL = 3_600,
   CALL_TIMEOUT = 120_000,
   SIGNIN_TIMEOUT = 90_000; // the runtime may take ~70 s per step: up to 30 s to load Paper's page + 30 s for its answer
 const METADATA_MAX_BYTES = 10_240;
 const PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 const UNAVAILABLE = 'Paper is temporarily unavailable';
+const TOO_MANY = 'Too many sign-in attempts. Try again in a few minutes.';
+const PAPER_API = 'https://api.paper.design',
+  PAPER_APP = 'https://app.paper.design';
 const NO_STORE = { 'cache-control': 'no-store', pragma: 'no-cache' };
 const HTML_HEADERS = {
   'content-type': 'text/html;charset=UTF-8',
@@ -54,13 +61,15 @@ const CORS = {
 };
 
 /** @typedef {{ name: string, value: string, domain: string, path?: string, expires?: number, httpOnly?: boolean, secure?: boolean, sameSite?: string }} Cookie */
-/** @typedef {{ cookies: Cookie[] }} Session */
 /** @typedef {{ status: number, body?: any }} Reply  a container's answer; 504 when it gave none in time */
 /**
- * @typedef {{ run(path: string, body: object): Promise<Reply>, latestSession(): Promise<Session | undefined> }} AccountStub
+ * @typedef {{ run(path: string, body: object): Promise<Reply> }} AccountStub
  * @typedef {{ step(path: string, body: object): Promise<Reply> }} SignInStub
- * @typedef {{ SEAL_KEY: string, PUBLIC_URL?: string,
+ * @typedef {{ limit(o: { key: string }): Promise<{ success: boolean }> }} RateLimit
+ * @typedef {{ SEAL_KEY: string, PUBLIC_URL?: string, SIGNIN_IP_LIMIT: RateLimit, SIGNIN_EMAIL_LIMIT: RateLimit,
  *   PAPER_ACCOUNT: { getByName(name: string): AccountStub }, PAPER_SIGNIN: { getByName(name: string): SignInStub } }} Env
+ * @typedef {{ waitUntil(promise: Promise<unknown>): void }} Ctx
+ * @typedef {{ tools: object[], instructions?: string }} Catalog
  */
 /**
  * @typedef {{ clientId: string, redirectUri: string, state?: string, codeChallenge: string, resource: string }}
@@ -196,18 +205,20 @@ function hasCookie(request, prefix, value) {
   return false;
 }
 
-/** @param {string} body @param {string[]} [cookies] */
-function page(body, cookies = []) {
+/** @param {string} body @param {string[]} [cookies] @param {number} [status] @param {string} [nonce] */
+function page(body, cookies = [], status = 200, nonce = '') {
   const headers = new Headers(HTML_HEADERS);
+  // the sign-in page's one inline script runs by its nonce; nothing else does
+  if (nonce) headers.set('content-security-policy', `frame-ancestors 'none'; script-src 'nonce-${nonce}'`);
   for (const c of cookies) headers.append('set-cookie', c);
-  return new Response(body, { headers });
+  return new Response(body, { status, headers });
 }
 
-/** Only Paper's own cookies cross into a token or a container @param {Cookie[] | undefined} cookies */
-const paperCookies = (cookies) =>
-  (Array.isArray(cookies) ? cookies : []).filter(
-    (c) => typeof c?.domain === 'string' && /(^|\.)paper\.design$/.test(c.domain),
-  );
+/** A sign-in step's page @param {Omit<Parameters<typeof signInPage>[0], 'nonce'>} p @param {string[]} [cookies] */
+const signInStep = (p, cookies = [], status = 200) => {
+  const nonce = random(16);
+  return page(signInPage({ ...p, nonce }), cookies, status, nonce);
+};
 
 // --- clients -------------------------------------------------------------------------------------------------------
 
@@ -335,6 +346,7 @@ async function authorizePage(/** @type {URL} */ url, /** @type {Env} */ env) {
     return plain('Invalid redirect_uri: it is not one this client registered');
   }
   const state = param('state') ?? undefined;
+  // From here the client and redirect_uri are known, so errors go back to it, as OAuth requires (RFC 6749 §4.1.2.1)
   const refuse = (/** @type {string} */ error, /** @type {string} */ description) =>
     redirect(redirectUri, { error, error_description: description, state, iss: url.origin });
   if (param('response_type') !== 'code')
@@ -354,6 +366,8 @@ async function authorizePage(/** @type {URL} */ url, /** @type {Env} */ env) {
     clientName: client.name || 'An MCP client',
     redirectUri,
     logoUri: client.logoUri,
+    // a client ID metadata document is vouched for by its host; a registration (DCR) by nobody
+    clientHost: clientId.startsWith('https://') ? new URL(clientId).host : undefined,
     state: await seal(env, 'request', authRequest, REQUEST_TTL),
     csrfToken: csrf,
   });
@@ -377,7 +391,7 @@ async function consent(/** @type {Request} */ request, /** @type {URL} */ url, /
   // a fresh sign-in job, bound to this browser by the nonce cookie (no login CSRF, nobody else can drive the job)
   const nonce = random();
   const flow = await seal(env, 'signin', { a: authRequest, j: random(), n: nonce }, REQUEST_TTL);
-  return page(signInPage({ flow, step: 'email' }), [clear, setCookie('SIGNIN', nonce, REQUEST_TTL)]);
+  return signInStep({ flow, step: 'email' }, [clear, setCookie('SIGNIN', nonce, REQUEST_TTL)]);
 }
 
 /**
@@ -393,13 +407,26 @@ async function signIn(/** @type {Request} */ request, /** @type {URL} */ url, /*
     return plain('This sign-in has expired. Start again from your MCP client.');
   }
   const email = (form.get('email') ?? '').trim().slice(0, 320);
+  const asked = form.get('step');
+  const step = asked === 'password' || asked === 'code' ? asked : 'email';
+  // Abuse limits (each step drives a browser): every step per IP, and sign-in starts per email (hashed: no address
+  // reaches the limiter). Over either, the same page says so.
+  const ip = request.headers.get('cf-connecting-ip') ?? 'unknown';
+  const over = async (/** @type {RateLimit} */ limiter, /** @type {string} */ key) =>
+    !(await limiter.limit({ key })).success;
+  if (
+    (await over(env.SIGNIN_IP_LIMIT, ip)) ||
+    (step === 'email' && (await over(env.SIGNIN_EMAIL_LIMIT, await s256(email.toLowerCase()))))
+  ) {
+    return signInStep({ flow, step, email, message: TOO_MANY }, [], 429);
+  }
   const container = env.PAPER_SIGNIN.getByName(job.j);
   const { status, body } =
-    form.get('step') === 'email'
+    step === 'email'
       ? await container.step('/signin/start', { email })
       : await container.step('/signin/continue', { value: (form.get('value') ?? '').slice(0, 1024) });
 
-  const cookies = paperCookies(body?.session?.cookies);
+  const cookies = Array.isArray(body?.session?.cookies) ? paperCookies(body.session.cookies) : [];
   if (status === 200 && body?.step === 'done' && typeof body.user?.id === 'string' && cookies.length) {
     const { a } = job;
     // ponytail: nothing is stored, so a code is not single-use; it lives 60 s and is useless without the PKCE verifier.
@@ -407,11 +434,13 @@ async function signIn(/** @type {Request} */ request, /** @type {URL} */ url, /*
     return redirect(a.redirectUri, { code, state: a.state, iss: url.origin }, [setCookie('SIGNIN', job.n, 0)]);
   }
   if (status === 200 && (body?.step === 'password' || body?.step === 'code')) {
-    return page(signInPage({ flow, step: body.step, email, message: body.message }));
+    return signInStep({ flow, step: body.step, email, message: body.message });
   }
+  // No answer in time: the same step again. The job carries on, and keeps a `done` for 60 s for the resubmission.
+  if (status === 504) return signInStep({ flow, step, email, message: `${UNAVAILABLE}. Submit again to continue.` });
   // `error`, or the container failed: Paper's message (or ours), and the email again to start over
   const message = (status === 200 || status === 400) && body ? (body.message ?? body.error?.message) : undefined;
-  return page(signInPage({ flow, step: 'email', email, message: message || `${UNAVAILABLE}. Try again.` }));
+  return signInStep({ flow, step: 'email', email, message: message || `${UNAVAILABLE}. Try again.` });
 }
 
 /** Seals a grant into the client's token pair. @param {{ SEAL_KEY: string }} env @param {Grant} grant */
@@ -421,9 +450,65 @@ async function issue(env, { s, u, c, r, g }) {
     access_token: await seal(env, 'access', { s: cookies, u, r, g }, ACCESS_TTL),
     token_type: 'Bearer',
     expires_in: ACCESS_TTL,
-    refresh_token: await seal(env, 'refresh', { s: cookies, u, c, r, g }),
+    refresh_token: await seal(env, 'refresh', { s: cookies, u, c, r, g }, REFRESH_TTL),
     resource: r,
   });
+}
+
+/**
+ * Paper's Set-Cookie renewals applied to `cookies` (a renewed cookie replaces its old self; a deleted one goes)
+ * @param {Cookie[]} cookies @param {string[]} lines Set-Cookie headers from `host` @param {string} host
+ */
+export function renewCookies(cookies, lines, host) {
+  let out = cookies;
+  for (const line of lines) {
+    const [pair, ...rest] = line.split(';');
+    const at = pair.indexOf('=');
+    if (at < 1) continue;
+    /** @type {Record<string, string>} */
+    const attr = {};
+    for (const a of rest) {
+      const i = a.indexOf('=');
+      attr[(i < 0 ? a : a.slice(0, i)).trim().toLowerCase()] = i < 0 ? '' : a.slice(i + 1).trim();
+    }
+    const name = pair.slice(0, at).trim();
+    const domain = attr.domain ? `.${attr.domain.replace(/^\./, '')}` : host;
+    const path = attr.path || '/';
+    const maxAge = Number.parseInt(attr['max-age'], 10);
+    const expires = Number.isFinite(maxAge) ? now() + maxAge : attr.expires ? Date.parse(attr.expires) / 1000 : -1;
+    out = out.filter((c) => !(c.name === name && c.domain === domain && (c.path ?? '/') === path));
+    if (expires === -1 || expires > now()) {
+      const sameSite = (attr.samesite ?? 'lax').toLowerCase();
+      out.push({
+        name,
+        value: pair.slice(at + 1).trim(),
+        domain,
+        path,
+        expires,
+        httpOnly: 'httponly' in attr,
+        secure: 'secure' in attr,
+        sameSite: sameSite[0].toUpperCase() + sameSite.slice(1),
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Whether Paper still signs in `user` with these cookies (GET /auth/me): the cookies with Paper's renewals; null when
+ * Paper says signed out; undefined when Paper couldn't say (unreachable or failing: the session may well be fine)
+ * @param {Cookie[]} cookies @param {string} user @returns {Promise<Cookie[] | null | undefined>}
+ */
+export async function paperSession(cookies, user) {
+  const res = await fetch(`${PAPER_API}/auth/me`, {
+    headers: { cookie: cookieHeader(cookies), origin: PAPER_APP, accept: 'application/json' },
+    signal: AbortSignal.timeout(10_000),
+  }).catch(() => undefined);
+  if (res?.status === 401) return null;
+  if (res?.status !== 200) return undefined;
+  const me = await res.json().catch(() => undefined);
+  if (!me) return undefined;
+  return me.user?.id === user ? renewCookies(cookies, res.headers.getSetCookie(), new URL(PAPER_API).host) : null;
 }
 
 async function token(/** @type {Request} */ request, /** @type {URL} */ url, /** @type {Env} */ env) {
@@ -471,12 +556,11 @@ async function token(/** @type {Request} */ request, /** @type {URL} */ url, /**
     if (!refresh || refresh.c !== clientId) return oauthError('invalid_grant', 'Invalid refresh token');
     if (resource && resource !== refresh.r)
       return oauthError('invalid_target', 'resource does not match the authorized resource');
-    // Paper renews its cookie as tools run; the account's container hands the renewed one to its Durable Object,
-    // which keeps it in memory. That one goes into the new tokens; if the object has none, the old one does.
-    const latest = await env.PAPER_ACCOUNT.getByName(refresh.u)
-      .latestSession()
-      .catch(() => undefined);
-    return issue(env, { ...refresh, s: latest?.cookies ?? refresh.s });
+    // only this token's own session, if Paper still signs it in (with the cookie renewals Paper sends back)
+    const cookies = await paperSession(refresh.s, refresh.u);
+    if (cookies === null) return oauthError('invalid_grant', 'The Paper session has ended. Sign in again.');
+    if (!cookies) return oauthError('temporarily_unavailable', `${UNAVAILABLE}. Try again.`, 503);
+    return issue(env, { ...refresh, s: cookies });
   }
 
   return oauthError('unsupported_grant_type', 'grant_type must be authorization_code or refresh_token');
@@ -502,20 +586,68 @@ const unauthorized = (url, presented) =>
 /** What to tell the client when the container didn't answer with a result @param {Reply} reply */
 const failure = ({ status, body }) => ((status === 429 || status === 400) && body?.error?.message) || UNAVAILABLE;
 
+/** @type {Map<string, { exp: number, catalog: Catalog }>} */
+const catalogs = new Map();
+/** @param {URL} url @param {string} name */
+const catalogKey = (url, name) => `${url.origin}/.catalog/${encodeURIComponent(name)}`;
+/** The colo's cache (Workers only) @returns {Cache | undefined} */
+const edgeCache = () => /** @type {any} */ (globalThis).caches?.default;
+/** @param {string} name @param {Catalog} catalog */
+const remember = (name, catalog) => {
+  if (catalogs.size >= 100) catalogs.clear(); // client names are the client's to choose: keep memory bounded
+  catalogs.set(name, { exp: Date.now() + CATALOG_TTL * 1000, catalog });
+};
+
 /**
- * Streamable HTTP, JSON responses only (no SSE, no batches): one JSON-RPC message per POST. The MCP session id is
- * just the client's name (from initialize), handed back so tools/call can tell Paper which client it is.
+ * Paper's tool list and instructions for a client, cached for an hour in this isolate and in the colo's cache (it is
+ * the same for every account: not auth data), so initialize and tools/list don't wait for a container.
+ * ponytail: the Cache API is a no-op on workers.dev; module memory still saves the warm isolate's calls.
+ * @param {URL} url @param {string} name @returns {Promise<Catalog | undefined>}
  */
-async function mcp(/** @type {Request} */ request, /** @type {URL} */ url, /** @type {Env} */ env) {
+async function cachedCatalog(url, name) {
+  const hit = catalogs.get(name);
+  if (hit && hit.exp > Date.now()) return hit.catalog;
+  /** @type {Catalog | undefined} */
+  const catalog = await edgeCache()
+    ?.match(catalogKey(url, name))
+    .then((r) => r?.json())
+    .catch(() => undefined);
+  if (catalog) remember(name, catalog);
+  return catalog;
+}
+/** @param {URL} url @param {string} name @param {Catalog} catalog */
+async function storeCatalog(url, name, catalog) {
+  remember(name, catalog);
+  const res = Response.json(catalog, { headers: { 'cache-control': `max-age=${CATALOG_TTL}` } });
+  await edgeCache()
+    ?.put(catalogKey(url, name), res)
+    .catch(() => {});
+}
+
+/**
+ * Streamable HTTP, JSON responses only (no SSE, no batches): one JSON-RPC message per POST. Stateless: the MCP session
+ * id is a random UUID with the client's name (from initialize) after it, so later requests can tell Paper which client
+ * this is; any session id is accepted.
+ * @param {Request} request @param {URL} url @param {Env} env @param {Ctx} ctx
+ */
+async function mcp(request, url, env, ctx) {
   const bearer = /^bearer\s+(\S+)$/i.exec(request.headers.get('authorization') ?? '')?.[1];
   /** @type {Omit<Grant, 'c'> | undefined} */
   const access = await open(env, 'access', bearer);
   if (!access || !resources(url).includes(access.r)) return unauthorized(url, Boolean(bearer));
   if (request.method !== 'POST') return new Response(null, { status: 405, headers: { allow: 'POST', ...CORS } });
 
-  const msg = await request.json().catch(() => undefined);
+  let msg;
+  try {
+    msg = JSON.parse(await request.text());
+  } catch {
+    return json({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }, 400);
+  }
   if (!msg || typeof msg !== 'object' || Array.isArray(msg)) {
-    return json({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'One JSON-RPC message per request' } });
+    return json(
+      { jsonrpc: '2.0', id: null, error: { code: -32600, message: 'One JSON-RPC message per request' } },
+      400,
+    );
   }
   if (msg.id === undefined || typeof msg.method !== 'string') return new Response(null, { status: 202, headers: CORS });
   const reply = (/** @type {object} */ body, headers = {}) =>
@@ -525,35 +657,45 @@ async function mcp(/** @type {Request} */ request, /** @type {URL} */ url, /** @
 
   const account = env.PAPER_ACCOUNT.getByName(access.u);
   const session = { cookies: access.s };
+  let name = 'unknown';
+  if (msg.method === 'initialize') name = String(msg.params?.clientInfo?.name ?? name).slice(0, 100);
+  else {
+    try {
+      name = dec.decode(unb64u(request.headers.get('mcp-session-id')?.split('.')[1] ?? '')) || name;
+    } catch {
+      /* not one of ours */
+    }
+  }
+  const clientInfo = { name, transport: 'remote' };
   if (msg.method === 'initialize' || msg.method === 'tools/list') {
-    const catalog = await account.run('/catalog', { session });
-    if (catalog.status === 401) return unauthorized(url, true);
-    if (catalog.status !== 200 || !Array.isArray(catalog.body?.tools)) return fail(failure(catalog));
-    if (msg.method === 'tools/list') return reply({ result: { tools: catalog.body.tools } });
+    let catalog = await cachedCatalog(url, name);
+    // the first tools/call shouldn't wait for the container to start and load Paper: start it now
+    if (catalog && msg.method === 'initialize') ctx.waitUntil(account.run('/catalog', { session, clientInfo }));
+    if (!catalog) {
+      const loaded = await account.run('/catalog', { session, clientInfo });
+      if (loaded.status === 401) return unauthorized(url, true);
+      if (loaded.status !== 200 || !Array.isArray(loaded.body?.tools)) return fail(failure(loaded));
+      catalog = /** @type {Catalog} */ (loaded.body);
+      ctx.waitUntil(storeCatalog(url, name, catalog));
+    }
+    if (msg.method === 'tools/list') return reply({ result: { tools: catalog.tools } });
     const asked = msg.params?.protocolVersion;
-    const name = String(msg.params?.clientInfo?.name ?? 'unknown').slice(0, 100);
     return reply(
       {
         result: {
           protocolVersion: PROTOCOL_VERSIONS.includes(asked) ? asked : PROTOCOL_VERSIONS[1],
           capabilities: { tools: {} },
           serverInfo: { name: 'paper-remote-mcp', version: '0.2.0' },
-          ...(catalog.body.instructions && { instructions: catalog.body.instructions }),
+          ...(catalog.instructions && { instructions: catalog.instructions }),
         },
       },
-      { 'mcp-session-id': b64u(enc.encode(name)) },
+      { 'mcp-session-id': `${crypto.randomUUID()}.${b64u(enc.encode(name))}` },
     );
   }
   if (msg.method === 'tools/call') {
     const { name: tool, arguments: args = {} } = msg.params ?? {};
     if (typeof tool !== 'string') return fail('params.name is required', -32602);
-    let client = 'unknown';
-    try {
-      client = dec.decode(unb64u(request.headers.get('mcp-session-id') || b64u(enc.encode(client))));
-    } catch {
-      /* not one of ours */
-    }
-    const call = await account.run('/call', { session, tool, args, agentId: access.g, clientInfo: { name: client } });
+    const call = await account.run('/call', { session, tool, args, agentId: access.g, clientInfo });
     if (call.status === 401) return unauthorized(url, true);
     if (call.status === 200 && call.body?.result) return reply({ result: call.body.result });
     return reply({ result: { content: [{ type: 'text', text: failure(call) }], isError: true } });
@@ -564,8 +706,8 @@ async function mcp(/** @type {Request} */ request, /** @type {URL} */ url, /** @
 // --- routing -------------------------------------------------------------------------------------------------------
 
 export default {
-  /** @param {Request} request @param {Env} env */
-  async fetch(request, env) {
+  /** @param {Request} request @param {Env} env @param {Ctx} ctx */
+  async fetch(request, env, ctx) {
     // PUBLIC_URL: the origin clients see, when a proxy in front (a tunnel, another domain) changes the one this sees
     const url = new URL(request.url);
     if (env.PUBLIC_URL) url.href = new URL(url.pathname + url.search, env.PUBLIC_URL).href;
@@ -596,7 +738,7 @@ export default {
         client_id_metadata_document_supported: true,
       });
     }
-    if (path === '/mcp') return mcp(request, url, env);
+    if (path === '/mcp') return mcp(request, url, env, ctx);
     if (path === '/authorize') return method === 'POST' ? consent(request, url, env) : authorizePage(url, env);
     if (path === '/signin' && method === 'POST') return signIn(request, url, env);
     if (path === '/token' && method === 'POST') return token(request, url, env);
@@ -628,60 +770,38 @@ async function post(container, path, body, timeout) {
 }
 
 /**
- * One Paper account (named by Paper user id): its container runs the tools, one call at a time. It keeps the
- * catalog and the latest session Paper renewed, in memory only (never storage): a session lives here only while the
- * account is active, and goes back to the client inside its next refreshed token.
+ * One Paper account (named by Paper user id): its container runs the tools, one call at a time, each with the session
+ * from the caller's own token. It keeps nothing.
  */
 export class PaperAccount extends Container {
   defaultPort = 8080;
   sleepAfter = '10m';
   pingEndpoint = 'container/healthz';
-  /** @type {Session | undefined} */
-  session;
-  /** @type {{ tools: object[], instructions?: string } | undefined} */
-  catalog;
   #queue = Promise.resolve();
 
   /** RPC: `/catalog` or `/call`, queued behind this account's other calls @param {string} path @param {any} body */
   run(path, body) {
     /** @type {Promise<Reply>} */
-    const reply = this.#queue.then(() => this.#run(path, body));
+    const reply = this.#queue.then(() => post(this, path, body, CALL_TIMEOUT));
     this.#queue = reply.then(
       () => {},
       () => {},
     );
     return reply;
   }
-
-  /** @param {string} path @param {any} body @returns {Promise<Reply>} */
-  async #run(path, body) {
-    if (path === '/catalog' && this.catalog) return { status: 200, body: this.catalog };
-    // the renewed session, when there is one, is newer than the one in the client's token
-    const reply = await post(this, path, { ...body, session: this.session ?? body.session }, CALL_TIMEOUT);
-    if (reply.status === 401) this.session = undefined; // the token's own session gets the next try
-    if (reply.body?.session) this.session = { cookies: paperCookies(reply.body.session.cookies) };
-    if (path === '/catalog' && reply.status === 200) this.catalog = reply.body;
-    if (reply.body) delete reply.body.session;
-    return reply;
-  }
-
-  /** RPC: the latest session Paper renewed, if this account has seen one since it woke */
-  async latestSession() {
-    return this.session;
-  }
 }
 
 /** One sign-in job (named by a random id): its container drives Paper's sign-in page, step by step. */
 export class PaperSignIn extends Container {
   defaultPort = 8080;
-  sleepAfter = '5m';
+  sleepAfter = '2m';
   pingEndpoint = 'container/healthz';
 
   /** RPC: `/signin/start` or `/signin/continue` @param {string} path @param {object} body */
   async step(path, body) {
     const reply = await post(this, path, body, SIGNIN_TIMEOUT);
-    // done: the session is in the reply, so nothing needs a signed-in browser any more
-    if (reply.body?.step === 'done') this.stop().catch(() => {});
+    // done (the session is in the reply) or failed: this job's browser has nothing left to do
+    if (reply.body?.step === 'done' || reply.body?.step === 'error') this.stop().catch(() => {});
     return reply;
   }
 }

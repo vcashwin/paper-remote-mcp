@@ -11,5 +11,5 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.js", "src/**/*.d.ts", "remote/**/*.js"]
+  "include": ["src/**/*.js", "src/**/*.d.ts", "remote/**/*.js", "runtime/**/*.js"]
 }

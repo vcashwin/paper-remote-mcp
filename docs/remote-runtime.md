@@ -36,8 +36,12 @@ so the user signs in to Paper's real sign-in page, driven by the container, once
 
 `Session = { cookies: PlaywrightCookie[] }`
 
-The Worker seals the session into the client's access and refresh tokens. Nothing is written to disk, KV or DO storage.
-When Paper renews its cookie, the container returns the new cookies and the Worker reseals them at the next refresh.
+The Worker seals the session into the client's access token (1 h) and refresh token (30 days). Nothing is written to
+disk, KV or DO storage, and nothing remembers a session between requests: each request uses only the session sealed in
+its own token. On refresh the Worker calls `GET https://api.paper.design/auth/me` with the token's cookies: 401 →
+`invalid_grant` (sign in again); 200 → the `Set-Cookie` renewals Paper sends back (it renews the session cookie on
+every call) are merged in and sealed into new tokens; no answer or 5xx → 503 `temporarily_unavailable`, the refresh
+token stays valid. So signing out in Paper ends every token within an hour.
 
 ## Container HTTP API (internal, port 8080, only reachable through the Worker's container binding)
 
@@ -45,24 +49,30 @@ All bodies JSON. Errors: `{ "error": { "code": "auth" | "limit" | "bad_request" 
 with HTTP 401 (`auth`: Paper session missing or expired), 429 (`limit`), 400, 500.
 
 - `GET /healthz` → `{ ok: true, engines: { lite: "ready"|"cold"|"failed", browser: "running"|"stopped" } }`
-- `POST /catalog` `{ session }` → `{ tools: Tool[], instructions: string }`
-  The tool list and instructions from Paper's `getMCPServerConfig(clientInfo, true)`.
-- `POST /call` `{ session, tool, args, agentId, clientInfo: { name, transport? } }`
-  → `{ result: CallToolResult, session?: Session, engine: "lite" | "browser" }`
-  `result` is Paper's own MCP-shaped result (`{ content, isError? }`). `session` is present when cookies changed.
+- `POST /catalog` `{ session, clientInfo: { name, transport: "remote" } }` → `{ tools: Tool[], instructions: string }`
+  The tool list and instructions from Paper's `getMCPServerConfig(clientInfo, true)`. The Worker caches it per client
+  name for an hour (module memory + the colo's Cache API); on `initialize` it still calls `/catalog` in the background
+  to start the account's container, so the first `tools/call` doesn't wait for a cold start.
+- `POST /call` `{ session, tool, args, agentId, clientInfo: { name, transport: "remote" } }`
+  → `{ result: CallToolResult, engine: "lite" | "browser" }`
+  `result` is Paper's own MCP-shaped result (`{ content, isError? }`).
   Routing: tools in `LITE_TOOLS` run on the lite engine; anything else, or a lite failure that is not a tool error,
   runs on the browser engine. A tool naming a `fileId` opens that file first (as `ensureFile` does today).
 - `POST /signin/start` `{ email }` → `SignInStep`
 - `POST /signin/continue` `{ value }` → `SignInStep` (the container is per sign-in job, so it holds the job in memory)
 
 `SignInStep = { step: "password" | "code" | "done" | "error", message?: string, session?: Session,
-user?: { id: string, email: string, name?: string } }` (`done` carries `session` and `user`).
+user?: { id: string, email: string, name?: string } }` (`done` carries `session` and `user`). A `done` the Worker
+didn't receive in time (it waits 90 s) is kept for 60 s and returned to the retry of the same step.
 
 ## Worker ↔ container
 
 - `PaperAccount` Durable Object, addressed by Paper user id, owns one container (`instance_type` standard-1,
-  sleep after 10 idle minutes). It serialises calls per account and keeps the latest renewed session in memory.
-- `PaperSignIn` Durable Object, addressed by a random job id, owns a short-lived container for one sign-in.
+  sleep after 10 idle minutes, `max_instances` 50). It serialises calls per account and keeps nothing.
+- `PaperSignIn` Durable Object, addressed by a random job id, owns a short-lived container for one sign-in (sleep
+  after 2 idle minutes, `max_instances` 25), stopped as soon as a step returns `done` or `error`.
+- Sign-in abuse limits (Workers Rate Limiting bindings, approximate and per Cloudflare location): every sign-in step
+  10/min per client IP (`CF-Connecting-IP`), sign-in starts 2/min per email (SHA-256 of the lowercased address).
 
 ## Out of scope / never
 

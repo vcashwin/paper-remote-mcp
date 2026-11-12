@@ -33,23 +33,26 @@ claude mcp add --transport http paper https://<your-worker>/mcp
 
 **Nothing is stored on the server.** There is no database, KV, or log of tokens. Everything the Worker hands out is AES-256-GCM ciphertext under one secret (`SEAL_KEY`), sealed for a single purpose, and it carries its own state:
 
-| What the client holds | Inside (encrypted)                                     | Lives                        |
-| --------------------- | ------------------------------------------------------ | ---------------------------- |
-| `client_id` (DCR)     | its redirect URIs, name, logo                          | until `SEAL_KEY` changes     |
-| authorization `code`  | Paper session cookies, user, the client's PKCE request | 60 s                         |
-| `access_token`        | Paper session cookies, user id, grant id               | 24 h                         |
-| `refresh_token`       | the same, plus the client id                           | until Paper ends the session |
+| What the client holds | Inside (encrypted)                                     | Lives                    |
+| --------------------- | ------------------------------------------------------ | ------------------------ |
+| `client_id` (DCR)     | its redirect URIs, name, logo                          | until `SEAL_KEY` changes |
+| authorization `code`  | Paper session cookies, user, the client's PKCE request | 60 s                     |
+| `access_token`        | Paper session cookies, user id, grant id               | 1 h                      |
+| `refresh_token`       | the same, plus the client id                           | 30 days                  |
 
-A Paper session is the cookies Paper's sign-in sets on `paper.design` (only those are kept). Tokens are compressed before sealing, about 3.3 KB each. The account's Durable Object passes the session to its container on each call, one call at a time, and keeps the cookie Paper renews in memory; the next refresh seals that one into the client's new tokens. A container sleeps after 10 idle minutes.
+A Paper session is the cookies Paper's sign-in sets for its app on `paper.design` (the filter is `paperCookies` in `runtime/paper.js`). Tokens are compressed before sealing, about 3 KB each. Each request uses only the session sealed in its own token: the account's Durable Object passes it to its container, one call at a time, and remembers nothing. Every refresh asks Paper (`/auth/me`) whether that session is still signed in: if not, the client must sign in again; if so, the cookie renewals Paper sends back go into the new tokens. If Paper can't be reached, the refresh fails with 503 and the refresh token stays valid. Initialize and `tools/list` answer from a per-client catalog cache (1 h) while the account's container starts in the background; a container sleeps after 10 idle minutes.
 
-Trade-offs:
+**Trust: read this before you deploy or connect.**
+
+- **You type your Paper password on this server's domain, not Paper's.** That is what a phishing page looks like. Only sign in on an instance you (or someone you trust) deployed, and check the URL. The consent page shows where the client's code goes and marks clients that registered themselves (DCR) as unverified.
+- Your password or emailed code passes through the Worker and the sign-in container on its way to Paper's real sign-in page. Neither stores or logs it.
+- **Every token carries a live Paper session**, sealed under `SEAL_KEY`. Whoever has `SEAL_KEY` and a token can act as you in Paper. A leaked `SEAL_KEY` exposes every session in every outstanding token until its refresh token expires (30 days) or the user signs out in Paper; rotating it signs everyone out.
+- **Revoking = signing out in Paper.** There is no server-side revocation (nothing is stored); an access token keeps working until it expires, so a sign-out takes effect within an hour. Removing the server from your client just drops its tokens.
 - While an account is active, its container holds the Paper session in memory (never on disk or in storage).
-- Sign-in goes through our page to Paper's page: your password or emailed code passes through the Worker and the sign-in container on its way to Paper. Neither stores or logs it.
-- No server-side revocation. To disconnect, remove the server from your client, or end the session in Paper.
 - A code can be replayed within its 60 s, but it is useless without the client's PKCE verifier.
-- Rotating `SEAL_KEY` signs everyone out.
+- Sign-in is rate limited (Workers Rate Limiting): 10 steps a minute per IP, 2 sign-in starts a minute per email. Containers are capped by `max_instances` in `remote/wrangler.toml` (cost and capacity knobs).
 
-**Deploy** (needs Workers Paid for Containers, and Docker running: wrangler builds the image from `runtime/Dockerfile`):
+**Deploy** (needs **Workers Paid** for Containers, and Docker running: wrangler builds the image from `runtime/Dockerfile`):
 
 ```bash
 cd remote
