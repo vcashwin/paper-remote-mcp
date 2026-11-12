@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { HOOKS, LITE_TOOLS, createLiteEngine, toHappyCookie, toPlaywrightCookie } from './lite.js';
-import { paperCookies, parseFileId } from './paper.js';
+import { meterMock, paperCookies, parseFileId } from './paper.js';
 
 const SCRATCH = 'paper-remote-mcp scratch (ASH-259)';
 const quiet = { debug() {}, info() {}, warn() {}, error() {} };
@@ -70,6 +70,36 @@ test("Paper's modules may import only Paper's modules", async () => {
     await assert.rejects(resolve(s, paper, next), /refusing import/, s);
   }
   await assert.rejects(load('https://evil.example/x.js', {}, next), /refusing to load/);
+});
+
+test('meterMock serves a synthetic /meter/balance and passes other requests through', async () => {
+  const g = /** @type {any} */ (globalThis);
+  const realFetch = g.fetch;
+  const w = /** @type {any} */ ({ fetch: async () => new Response('real', { status: 202 }) });
+  const saved = { window: g.window, XMLHttpRequest: g.XMLHttpRequest };
+  g.window = w;
+  g.XMLHttpRequest = class {};
+  try {
+    meterMock();
+    const body = await (await w.fetch('https://workers.paper.design/meter/balance')).json();
+    assert.equal(body.manaUsed, 0);
+    assert.equal(body.manaCap, 20);
+    assert.equal(body.mcpUsed, 1);
+    assert.equal(body.mcpCap, 10000);
+    assert.ok(body.serverClock > Date.now(), 'serverClock runs ahead of the client clock');
+    assert.equal((await w.fetch('https://api.paper.design/auth/me')).status, 202, 'other URLs pass through');
+    // globalThis.fetch is wrapped too (the registrator snapshot case), without double-wrapping window.fetch.
+    const body2 = await (await g.fetch('https://workers.paper.design/meter/balance')).json();
+    assert.equal(body2.mcpCap, 10000);
+    w.__apiMocker.reset();
+    assert.equal(g.fetch, realFetch, 'reset restores globalThis.fetch');
+  } finally {
+    g.fetch = realFetch;
+    if (saved.window === undefined) delete g.window;
+    else g.window = saved.window;
+    if (saved.XMLHttpRequest === undefined) delete g.XMLHttpRequest;
+    else g.XMLHttpRequest = saved.XMLHttpRequest;
+  }
 });
 
 test('layout/raster tools are never routed to the lite engine', () => {

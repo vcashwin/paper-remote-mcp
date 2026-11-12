@@ -1,7 +1,7 @@
 // Browser engine: Paper's web editor in headless Chromium, its MCP handlers called in the page.
 // Same approach as src/editor/host.js (copied, not imported: the runtime ships as its own image).
 import { chromium } from 'playwright';
-import { CHROMIUM_ARGS, engineError, paperCookies, parseFileId, webmcpStub } from './paper.js';
+import { CHROMIUM_ARGS, engineError, meterMock, paperCookies, parseFileId, webmcpStub } from './paper.js';
 
 const APP = 'https://app.paper.design';
 const API = 'https://api.paper.design';
@@ -44,6 +44,8 @@ export async function createBrowserEngine({ session, log }) {
     await context.addCookies(paperCookies(session.cookies));
     if ((await whoAmI(context)).status === 401) throw engineError('auth', 'Paper session expired. Sign in again.');
     await context.addInitScript(webmcpStub);
+    await context.addInitScript(meterMock);
+    log.warn('browser: /meter/balance responses are synthetic (mcpCap 10000)');
     const page = await context.newPage();
     /** @type {string | null} */
     let currentFileId = null;

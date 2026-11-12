@@ -6,7 +6,7 @@
 // and makes close()/reload a process exit. Parent and child talk over IPC.
 import { fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { engineError, paperCookies, parseFileId, webmcpStub } from './paper.js';
+import { engineError, meterMock, paperCookies, parseFileId, webmcpStub } from './paper.js';
 
 const APP = 'https://app.paper.design';
 const API = 'https://api.paper.design';
@@ -295,6 +295,7 @@ async function runChild() {
     };
     jar.addCookies(cookies.map(toHappyCookie));
     installStubs();
+    relay('warn')('meter: /meter/balance responses are synthetic (mcpCap 10000)');
     // Paper reloads the page when the sync server wants a newer client (minClient) or after a desync. Only a fresh
     // engine (new bundle, new socket) helps, so remember it and refuse further calls.
     window.location.reload = () => void (reloadAsked = true);
@@ -447,6 +448,7 @@ function installStubs() {
   window.requestAnimationFrame = (cb) => Number(setTimeout(() => cb(performance.now()), FRAME_MS));
   window.cancelAnimationFrame = (id) => clearTimeout(id);
   webmcpStub();
+  meterMock();
   // happy-dom fires a skipped stylesheet's load event synchronously inside appendChild, before Vite's preload helper
   // attaches its listener, so `import()` of any chunk with CSS deps (MCPHandlers) would hang. Browsers fire it async.
   const dispatch = HTMLLinkElement.prototype.dispatchEvent;
