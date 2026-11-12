@@ -14,6 +14,49 @@ claude mcp add paper -- npx -y paper-remote-mcp mcp
 
 > Community project. Not affiliated with or endorsed by Paper.
 
+## Remote server (OAuth, nothing to install)
+
+`remote/` is a hosted way in: one URL, OAuth in the browser, no `npx`, no Chromium, no desktop app. It is a stateless OAuth front door for **Paper's own hosted MCP server** (`https://mcp.paper.design`, signed in through `login.paper.design`), with the consent page in Linefold's design system.
+
+```bash
+claude mcp add --transport http paper https://<your-worker>/mcp
+```
+
+```
+  MCP client ──OAuth 2.1 (DCR or CIMD, PKCE)──► remote/ (Cloudflare Worker) ──OAuth (CIMD, PKCE)──► login.paper.design
+      │                                                │
+      └──── /mcp, Bearer <sealed> ─────────────────────┴── opened, forwarded as Bearer <Paper token> ──► mcp.paper.design
+```
+
+**Nothing is stored on the server.** There is no database, KV, or log of tokens. Everything the Worker hands out is AES-256-GCM ciphertext under one secret (`SEAL_KEY`), sealed for a single purpose, and it carries its own state:
+
+| What the client holds | Inside (encrypted)                              | Lives                              |
+| --------------------- | ----------------------------------------------- | ---------------------------------- |
+| `client_id` (DCR)     | its redirect URIs, name, logo                   | until `SEAL_KEY` changes           |
+| authorization `code`  | Paper's token pair + the client's PKCE challenge | 60 s                              |
+| `access_token`        | Paper's access token                            | Paper's lifetime                   |
+| `refresh_token`       | Paper's refresh token                           | until Paper ends it                |
+
+Paper's refresh tokens are single use. On refresh, the Worker asks Paper for a new pair and seals it into the client's new tokens, so the rotation lives with the client and the server keeps nothing. Signing in is Paper's own page. This server never sees a password. It signs in as a public OAuth client of Paper whose `client_id` is its own [client ID metadata document](https://datatracker.ietf.org/doc/draft-ietf-oauth-client-id-metadata-document/) (`/oauth/client.json`), so no registration with Paper is needed.
+
+Trade-offs of being stateless:
+- No server-side revocation. To disconnect, remove the server from your client, or end the session in Paper.
+- A code can be replayed within its 60 s, but it is useless without the client's PKCE verifier.
+- Rotating `SEAL_KEY` signs everyone out.
+- Paper's refresh tokens are single use and nothing remembers the last one, so two refreshes racing (or a lost refresh response) end that connection; the client asks you to sign in again.
+
+**Deploy** (Cloudflare Workers, free tier is enough):
+
+```bash
+cd remote
+npx wrangler secret put SEAL_KEY      # paste: openssl rand -base64 32
+npx wrangler deploy
+```
+
+Optional `PUBLIC_URL`: set it when a proxy in front changes the origin the Worker sees (e.g. a tunnel). Local dev: put `SEAL_KEY=…` (and `PUBLIC_URL=…` for a tunnel) in `remote/.dev.vars`, then run `npm run remote:dev`. Paper must be able to fetch `/oauth/client.json`, so a full local sign-in needs a public tunnel (`npx cloudflared tunnel --url http://127.0.0.1:8787`). Run the tests with `npm test`.
+
+The local `npx` server below is still the way to drive the editor directly (and the open file) from your own machine.
+
 ## Requirements
 
 - Node 20+
