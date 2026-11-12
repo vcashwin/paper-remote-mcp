@@ -5,3 +5,7 @@ node_modules/
 .paper-mcp/
 profiles/
 dist/
+
+# Cloudflare Worker (remote/) local state and dev secrets
+.wrangler/
+.dev.vars

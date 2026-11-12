@@ -1,0 +1,5 @@
+# Paper Remote MCP: `npx wrangler deploy` from this directory (see README › Remote server).
+# The one secret: `npx wrangler secret put SEAL_KEY` with `openssl rand -base64 32`. Nothing else is configured or stored.
+name = "paper-remote-mcp"
+main = "worker.js"
+compatibility_date = "2026-11-01"

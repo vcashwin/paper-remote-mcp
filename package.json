@@ -21,7 +21,10 @@
     "start": "node src/cli.js",
     "login": "node src/cli.js login",
     "doctor": "node src/cli.js doctor",
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test remote/worker.test.js",
+    "remote:dev": "cd remote && npx wrangler dev",
+    "remote:deploy": "cd remote && npx wrangler deploy"
   },
   "keywords": [
     "paper",
