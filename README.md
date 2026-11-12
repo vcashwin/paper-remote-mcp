@@ -16,44 +16,51 @@ claude mcp add paper -- npx -y paper-remote-mcp mcp
 
 ## Remote server (OAuth, nothing to install)
 
-`remote/` is a hosted way in: one URL, OAuth in the browser, no `npx`, no Chromium, no desktop app. It is a stateless OAuth front door for **Paper's own hosted MCP server** (`https://mcp.paper.design`, signed in through `login.paper.design`), with the consent page in Linefold's design system.
+`remote/` is a hosted way in: one URL, OAuth in the browser, nothing to install. A Cloudflare Worker is the OAuth front door and the MCP endpoint; Paper's own MCP tools run in a container per active Paper account (`runtime/`, see [docs/remote-runtime.md](docs/remote-runtime.md)). Signing in is Paper's own OAuth (the same flow Paper Desktop uses): our page opens Paper's hosted sign-in, and you paste back the one-time link Paper shows afterwards — your Paper password never touches this server. The pages use Linefold's design system.
 
 ```bash
 claude mcp add --transport http paper https://<your-worker>/mcp
 ```
 
 ```
-  MCP client ──OAuth 2.1 (DCR or CIMD, PKCE)──► remote/ (Cloudflare Worker) ──OAuth (CIMD, PKCE)──► login.paper.design
-      │                                                │
-      └──── /mcp, Bearer <sealed> ─────────────────────┴── opened, forwarded as Bearer <Paper token> ──► mcp.paper.design
+  MCP client ──OAuth 2.1 (DCR or CIMD, PKCE)──► remote/worker.js (Cloudflare Worker)
+      │                                            │ consent → sign-in page
+      │                                            ▼
+      │                                Paper's hosted sign-in (OAuth, PKCE) ─► paste link ─► session cookies
+      │
+      └──── /mcp, Bearer <sealed session> ─► Worker ─► PaperAccount DO (per Paper user) ─► container: Paper's tools
 ```
 
 **Nothing is stored on the server.** There is no database, KV, or log of tokens. Everything the Worker hands out is AES-256-GCM ciphertext under one secret (`SEAL_KEY`), sealed for a single purpose, and it carries its own state:
 
-| What the client holds | Inside (encrypted)                              | Lives                              |
-| --------------------- | ----------------------------------------------- | ---------------------------------- |
-| `client_id` (DCR)     | its redirect URIs, name, logo                   | until `SEAL_KEY` changes           |
-| authorization `code`  | Paper's token pair + the client's PKCE challenge | 60 s                              |
-| `access_token`        | Paper's access token                            | Paper's lifetime                   |
-| `refresh_token`       | Paper's refresh token                           | until Paper ends it                |
+| What the client holds | Inside (encrypted)                                     | Lives                    |
+| --------------------- | ------------------------------------------------------ | ------------------------ |
+| `client_id` (DCR)     | its redirect URIs, name, logo                          | until `SEAL_KEY` changes |
+| authorization `code`  | Paper session cookies, user, the client's PKCE request | 60 s                     |
+| `access_token`        | Paper session cookies, user id, grant id               | 1 h                      |
+| `refresh_token`       | the same, plus the client id                           | 30 days                  |
 
-Paper's refresh tokens are single use. On refresh, the Worker asks Paper for a new pair and seals it into the client's new tokens, so the rotation lives with the client and the server keeps nothing. Signing in is Paper's own page. This server never sees a password. It signs in as a public OAuth client of Paper whose `client_id` is its own [client ID metadata document](https://datatracker.ietf.org/doc/draft-ietf-oauth-client-id-metadata-document/) (`/oauth/client.json`), so no registration with Paper is needed.
+A Paper session is the cookies Paper's sign-in sets for its app on `paper.design` (the filter is `paperCookies` in `runtime/paper.js`). Tokens are compressed before sealing, about 3 KB each. Each request uses only the session sealed in its own token: the account's Durable Object passes it to its container, one call at a time, and remembers nothing. Every refresh asks Paper (`/auth/me`) whether that session is still signed in: if not, the client must sign in again; if so, the cookie renewals Paper sends back go into the new tokens. If Paper can't be reached, the refresh fails with 503 and the refresh token stays valid. Initialize and `tools/list` answer from a per-client catalog cache (1 h) while the account's container starts in the background; a container sleeps after 10 idle minutes.
 
-Trade-offs of being stateless:
-- No server-side revocation. To disconnect, remove the server from your client, or end the session in Paper.
+**Trust: read this before you deploy or connect.**
+
+- **Sign-in happens on Paper's own page, never this server.** You authenticate with Paper directly (its hosted OAuth, the same client Paper Desktop uses); afterwards Paper shows an "Opening Paper…" page and you paste its one-time link back. The server exchanges that link with Paper (PKCE) for the session — your Paper password and emailed codes never touch it. Still, only connect to an instance you (or someone you trust) deployed, and check the URL: the consent page shows where the client's code goes and marks clients that registered themselves (DCR) as unverified.
+- **Every token carries a live Paper session**, sealed under `SEAL_KEY`. Whoever has `SEAL_KEY` and a token can act as you in Paper. A leaked `SEAL_KEY` exposes every session in every outstanding token until its refresh token expires (30 days) or the user signs out in Paper; rotating it signs everyone out.
+- **Revoking = signing out in Paper.** There is no server-side revocation (nothing is stored); an access token keeps working until it expires, so a sign-out takes effect within an hour. Removing the server from your client just drops its tokens.
+- While an account is active, its container holds the Paper session in memory (never on disk or in storage).
 - A code can be replayed within its 60 s, but it is useless without the client's PKCE verifier.
-- Rotating `SEAL_KEY` signs everyone out.
-- Paper's refresh tokens are single use and nothing remembers the last one, so two refreshes racing (or a lost refresh response) end that connection; the client asks you to sign in again.
+- Sign-in rides Paper Desktop's public OAuth client; if Paper rotates it or tightens the exchange, sign-in breaks until the flow is re-extracted. Containers are capped by `max_instances` in `remote/wrangler.toml` (cost and capacity knobs).
 
-**Deploy** (Cloudflare Workers, free tier is enough):
+**Deploy** (needs **Workers Paid** for Containers, and Docker running: wrangler builds the image from `runtime/Dockerfile`):
 
 ```bash
 cd remote
+npm install                           # @cloudflare/containers
 npx wrangler secret put SEAL_KEY      # paste: openssl rand -base64 32
 npx wrangler deploy
 ```
 
-Optional `PUBLIC_URL`: set it when a proxy in front changes the origin the Worker sees (e.g. a tunnel). Local dev: put `SEAL_KEY=…` (and `PUBLIC_URL=…` for a tunnel) in `remote/.dev.vars`, then run `npm run remote:dev`. Paper must be able to fetch `/oauth/client.json`, so a full local sign-in needs a public tunnel (`npx cloudflared tunnel --url http://127.0.0.1:8787`). Run the tests with `npm test`.
+Optional `PUBLIC_URL`: set it when a proxy in front changes the origin the Worker sees (e.g. a tunnel). Local dev, containers included (Docker runs them): put `SEAL_KEY=…` in `remote/.dev.vars`, then `npm run remote:dev`. Run the tests with `npm test`.
 
 The local `npx` server below is still the way to drive the editor directly (and the open file) from your own machine.
 

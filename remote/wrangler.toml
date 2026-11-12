@@ -1,5 +1,22 @@
-# Paper Remote MCP: `npx wrangler deploy` from this directory (see README › Remote server).
+# Paper Remote MCP: `npx wrangler deploy` from this directory (see README › Remote server). Needs Workers Paid
+# (containers) and Docker (wrangler builds the runtime image from ../runtime/Dockerfile).
 # The one secret: `npx wrangler secret put SEAL_KEY` with `openssl rand -base64 32`. Nothing else is configured or stored.
 name = "paper-remote-mcp"
 main = "worker.js"
 compatibility_date = "2026-11-01"
+
+# max_instances is a cost and capacity knob: at most this many accounts active at once.
+# One container per active Paper account: Paper's MCP tools (runtime/server.js). Sleeps after 10 idle minutes.
+[[containers]]
+class_name = "PaperAccount"
+image = "../runtime/Dockerfile"
+instance_type = "standard-1"
+max_instances = 50
+
+[[durable_objects.bindings]]
+name = "PAPER_ACCOUNT"
+class_name = "PaperAccount"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["PaperAccount"]
