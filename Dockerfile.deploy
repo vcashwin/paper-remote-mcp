@@ -1,0 +1,15 @@
+# Single-tenant deployment (remote/node.js): the OAuth front door and Paper's tools in one image, for a VM or any
+# Docker host. Multi-arch (the Playwright base ships arm64 + amd64 Chromium). Build from the repo root:
+#   docker build -f Dockerfile.deploy -t paper-remote-mcp .
+#   docker run -d -p 127.0.0.1:8080:8080 -e SEAL_KEY=… -e PUBLIC_URL=https://paper.example.com paper-remote-mcp
+FROM mcr.microsoft.com/playwright:v1.63.0-noble
+ENV NODE_ENV=production PORT=8080
+WORKDIR /app
+COPY runtime/package.json runtime/package-lock.json ./runtime/
+COPY remote/package.json remote/package-lock.json ./remote/
+RUN cd runtime && npm ci --omit=dev && cd ../remote && npm ci --omit=dev && npm cache clean --force
+COPY --chown=pwuser:pwuser runtime ./runtime
+COPY --chown=pwuser:pwuser remote ./remote
+USER pwuser
+EXPOSE 8080
+CMD ["node", "remote/node.js"]
