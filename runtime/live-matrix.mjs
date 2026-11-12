@@ -1,5 +1,6 @@
-// One call per Paper MCP tool through the lite engine, on the scratch file only. Spends ~37 of the account's weekly
-// MCP quota (get_guide, get_basic_info and finish_working_on_nodes are unmetered), so run it deliberately:
+// One call per Paper MCP tool through the lite engine, on the scratch file only. The meter mock drops
+// /meter/record-mcp, so these calls are not recorded against the account's weekly quota; still run it deliberately,
+// it drives the real service:
 //   PAPER_SESSION_FILE=/path/session.json node runtime/live-matrix.mjs [out.json]
 // Writes per-tool { ok, isError, ms, excerpt } so LITE_TOOLS in lite.js can be checked against real results.
 // Skipped: create_folder (would create a second resource in the account).

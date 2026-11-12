@@ -10,10 +10,10 @@ JSON over `wss://sync.paper.design/sync/<fileId>`. Only layout tools (screenshot
 measurement) need a real layout engine. So each account gets a **lite engine** (Paper's bundle in a lightweight DOM in
 Node) and a **browser engine** (Chromium) that starts only when a tool needs it.
 
-Paper's own tool wrapper gates metered tools on `GET /meter/balance` and calls
-`workers.paper.design/meter/record-mcp` on every call. Both engines inject `meterMock` (`runtime/paper.js`), which
-answers `/meter/balance` with a synthetic always-full balance (`mcpCap: 10000`), so the client-side weekly-limit
-gate never trips. Usage recording runs unmodified.
+Paper's own tool wrapper gates metered tools on `GET /meter/balance` and reports usage to
+`workers.paper.design/meter/record-mcp` on every call. Both engines inject `meterMock` (`runtime/paper.js`):
+`/meter/balance` answers with a synthetic always-full balance (`mcpCap: 10000`), so the client-side weekly-limit
+gate never trips, and `/meter/record-mcp` is acknowledged locally without reaching Paper, so no usage is recorded.
 
 ## Pieces
 

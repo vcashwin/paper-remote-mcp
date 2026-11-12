@@ -45,7 +45,7 @@ export async function createBrowserEngine({ session, log }) {
     if ((await whoAmI(context)).status === 401) throw engineError('auth', 'Paper session expired. Sign in again.');
     await context.addInitScript(webmcpStub);
     await context.addInitScript(meterMock);
-    log.warn('browser: /meter/balance responses are synthetic (mcpCap 10000)');
+    log.warn('browser: /meter/balance is synthetic (mcpCap 10000), /meter/record-mcp is dropped');
     const page = await context.newPage();
     /** @type {string | null} */
     let currentFileId = null;

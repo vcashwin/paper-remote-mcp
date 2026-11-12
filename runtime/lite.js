@@ -295,7 +295,7 @@ async function runChild() {
     };
     jar.addCookies(cookies.map(toHappyCookie));
     installStubs();
-    relay('warn')('meter: /meter/balance responses are synthetic (mcpCap 10000)');
+    relay('warn')('meter: /meter/balance is synthetic (mcpCap 10000), /meter/record-mcp is dropped');
     // Paper reloads the page when the sync server wants a newer client (minClient) or after a desync. Only a fresh
     // engine (new bundle, new socket) helps, so remember it and refuse further calls.
     window.location.reload = () => void (reloadAsked = true);

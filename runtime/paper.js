@@ -67,15 +67,15 @@ export function webmcpStub() {
 }
 
 /**
- * Synthetic `/meter/balance` for Paper's bundle. Paper's tool wrapper gates metered tools on this balance, so
- * answering it with an always-full weekly allowance (`mcpCap: 10000`) keeps the client-side weekly-limit gate from
- * ever tripping. Usage recording is untouched: Paper still calls `/meter/record-mcp` on every tool call.
+ * Synthetic meter endpoints for Paper's bundle. Paper's tool wrapper gates metered tools on `/meter/balance` and
+ * reports usage to `/meter/record-mcp` on every call. This answers the balance with an always-full weekly
+ * allowance (`mcpCap: 10000`) so the client-side weekly-limit gate never trips, and acknowledges `record-mcp`
+ * locally so usage is never reported to Paper.
  * Self-contained: Playwright serialises it into the page; the lite engine runs it after registering happy-dom.
  */
 export function meterMock() {
   const w = /** @type {any} */ (window);
   const g = /** @type {any} */ (globalThis);
-  const mockUrlPart = '/meter/balance';
   w.__apiMockerEnabled = true;
   const serverStartTime = (w.__serverStartTime ??= Date.now() + 5 * 60 * 1000);
   const clientStartTime = (w.__clientStartTime ??= Date.now());
@@ -88,8 +88,14 @@ export function meterMock() {
     mcpUsed: 1,
     mcpCap: 10000,
   });
-  /** @param {unknown} url */
-  const shouldMock = (url) => w.__apiMockerEnabled && String(url || '').includes(mockUrlPart);
+  /** The synthetic response body for a meter URL, or null for anything else. @param {unknown} url */
+  const mockBodyFor = (url) => {
+    if (!w.__apiMockerEnabled) return null;
+    const u = String(url || '');
+    if (u.includes('/meter/balance')) return JSON.stringify(getMockBody());
+    if (u.includes('/meter/record-mcp')) return '{"ok":true}';
+    return null;
+  };
   /** @param {string} type @param {unknown} url */
   const logMock = (type, url) => console.info(`[${type}] MOCKED:`, url);
 
@@ -111,9 +117,10 @@ export function meterMock() {
               : input instanceof URL
                 ? input.href
                 : '';
-        if (shouldMock(url)) {
+        const body = mockBodyFor(url);
+        if (body !== null) {
           logMock('fetch', url);
-          return new Response(JSON.stringify(getMockBody()), {
+          return new Response(body, {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           });
@@ -137,9 +144,9 @@ export function meterMock() {
     };
     XMLHttpRequest.prototype.send = function () {
       const self = /** @type {any} */ (this);
-      if (shouldMock(self.__apiMockerUrl)) {
+      const body = mockBodyFor(self.__apiMockerUrl);
+      if (body !== null) {
         logMock('xhr', self.__apiMockerUrl);
-        const body = JSON.stringify(getMockBody());
         Object.defineProperties(self, {
           readyState: { configurable: true, value: 4 },
           status: { configurable: true, value: 200 },
@@ -157,6 +164,19 @@ export function meterMock() {
     };
   }
 
+  // Telemetry often goes out via sendBeacon (it survives page unload): acknowledge it without sending anything.
+  const nav = /** @type {any} */ (navigator);
+  if (typeof nav.sendBeacon === 'function' && !w.__apiMocker.originalBeacon) {
+    w.__apiMocker.originalBeacon = nav.sendBeacon;
+    nav.sendBeacon = function (/** @type {string | URL} */ url, /** @type {unknown} */ data) {
+      if (mockBodyFor(url) !== null) {
+        logMock('beacon', url);
+        return true;
+      }
+      return w.__apiMocker.originalBeacon.call(nav, url, data);
+    };
+  }
+
   w.__apiMocker.enable = () => {
     w.__apiMockerEnabled = true;
   };
@@ -171,8 +191,9 @@ export function meterMock() {
       XMLHttpRequest.prototype.open = w.__apiMocker.originalXHROpen;
       XMLHttpRequest.prototype.send = w.__apiMocker.originalXHRSend;
     }
+    if (w.__apiMocker.originalBeacon) nav.sendBeacon = w.__apiMocker.originalBeacon;
     delete w.__apiMocker;
     console.info('API mocker reset');
   };
-  console.info('Meter mock installed: /meter/balance responses are synthetic (mcpCap 10000)');
+  console.info('Meter mock installed: /meter/balance is synthetic (mcpCap 10000), /meter/record-mcp is dropped');
 }

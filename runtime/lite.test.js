@@ -72,10 +72,13 @@ test("Paper's modules may import only Paper's modules", async () => {
   await assert.rejects(load('https://evil.example/x.js', {}, next), /refusing to load/);
 });
 
-test('meterMock serves a synthetic /meter/balance and passes other requests through', async () => {
+test('meterMock mocks the meter endpoints and passes other requests through', async () => {
   const g = /** @type {any} */ (globalThis);
   const realFetch = g.fetch;
-  const w = /** @type {any} */ ({ fetch: async () => new Response('real', { status: 202 }) });
+  let realCalls = 0;
+  const w = /** @type {any} */ ({
+    fetch: async () => (realCalls++, new Response('real', { status: 202 })),
+  });
   const saved = { window: g.window, XMLHttpRequest: g.XMLHttpRequest };
   g.window = w;
   g.XMLHttpRequest = class {};
@@ -87,7 +90,12 @@ test('meterMock serves a synthetic /meter/balance and passes other requests thro
     assert.equal(body.mcpUsed, 1);
     assert.equal(body.mcpCap, 10000);
     assert.ok(body.serverClock > Date.now(), 'serverClock runs ahead of the client clock');
+    // /meter/record-mcp is acknowledged without reaching the original fetch.
+    const recorded = await w.fetch('https://workers.paper.design/meter/record-mcp', { method: 'POST' });
+    assert.equal(recorded.status, 200);
+    assert.deepEqual(await recorded.json(), { ok: true });
     assert.equal((await w.fetch('https://api.paper.design/auth/me')).status, 202, 'other URLs pass through');
+    assert.equal(realCalls, 1, 'only the non-meter URL reached the original fetch');
     // globalThis.fetch is wrapped too (the registrator snapshot case), without double-wrapping window.fetch.
     const body2 = await (await g.fetch('https://workers.paper.design/meter/balance')).json();
     assert.equal(body2.mcpCap, 10000);
