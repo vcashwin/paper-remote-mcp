@@ -24,7 +24,9 @@ const { createRuntime } = await import('../runtime/server.js');
 
 const CALL_TIMEOUT = 120_000;
 const PORT = Number(process.env.PORT || 8080);
-const HOST = process.env.HOST || '127.0.0.1';
+// 0.0.0.0: in Docker the publish rule is what restricts exposure (e.g. -p 127.0.0.1:8081:8080). HOST=127.0.0.1
+// tightens a bare local run to loopback.
+const HOST = process.env.HOST || '0.0.0.0';
 if (!process.env.SEAL_KEY) {
   console.error('SEAL_KEY is required (openssl rand -base64 32)');
   process.exit(2);
