@@ -16,44 +16,49 @@ claude mcp add paper -- npx -y paper-remote-mcp mcp
 
 ## Remote server (OAuth, nothing to install)
 
-`remote/` is a hosted way in: one URL, OAuth in the browser, no `npx`, no Chromium, no desktop app. It is a stateless OAuth front door for **Paper's own hosted MCP server** (`https://mcp.paper.design`, signed in through `login.paper.design`), with the consent page in Linefold's design system.
+`remote/` is a hosted way in: one URL, OAuth in the browser, nothing to install. A Cloudflare Worker is the OAuth front door and the MCP endpoint; Paper's own MCP tools run in a container per active Paper account (`runtime/`, see [docs/remote-runtime.md](docs/remote-runtime.md)). Signing in happens on our page: you give your Paper email, and a short-lived container drives Paper's real sign-in page with what you type (your password, or the code Paper emails you). The pages use Linefold's design system.
 
 ```bash
 claude mcp add --transport http paper https://<your-worker>/mcp
 ```
 
 ```
-  MCP client ──OAuth 2.1 (DCR or CIMD, PKCE)──► remote/ (Cloudflare Worker) ──OAuth (CIMD, PKCE)──► login.paper.design
-      │                                                │
-      └──── /mcp, Bearer <sealed> ─────────────────────┴── opened, forwarded as Bearer <Paper token> ──► mcp.paper.design
+  MCP client ──OAuth 2.1 (DCR or CIMD, PKCE)──► remote/worker.js (Cloudflare Worker)
+      │                                            │ consent → sign-in pages
+      │                                            ▼
+      │                                PaperSignIn DO ─► container: Paper's sign-in page ─► session cookies
+      │
+      └──── /mcp, Bearer <sealed session> ─► Worker ─► PaperAccount DO (per Paper user) ─► container: Paper's tools
 ```
 
 **Nothing is stored on the server.** There is no database, KV, or log of tokens. Everything the Worker hands out is AES-256-GCM ciphertext under one secret (`SEAL_KEY`), sealed for a single purpose, and it carries its own state:
 
-| What the client holds | Inside (encrypted)                              | Lives                              |
-| --------------------- | ----------------------------------------------- | ---------------------------------- |
-| `client_id` (DCR)     | its redirect URIs, name, logo                   | until `SEAL_KEY` changes           |
-| authorization `code`  | Paper's token pair + the client's PKCE challenge | 60 s                              |
-| `access_token`        | Paper's access token                            | Paper's lifetime                   |
-| `refresh_token`       | Paper's refresh token                           | until Paper ends it                |
+| What the client holds | Inside (encrypted)                                     | Lives                        |
+| --------------------- | ------------------------------------------------------ | ---------------------------- |
+| `client_id` (DCR)     | its redirect URIs, name, logo                          | until `SEAL_KEY` changes     |
+| authorization `code`  | Paper session cookies, user, the client's PKCE request | 60 s                         |
+| `access_token`        | Paper session cookies, user id, grant id               | 24 h                         |
+| `refresh_token`       | the same, plus the client id                           | until Paper ends the session |
 
-Paper's refresh tokens are single use. On refresh, the Worker asks Paper for a new pair and seals it into the client's new tokens, so the rotation lives with the client and the server keeps nothing. Signing in is Paper's own page. This server never sees a password. It signs in as a public OAuth client of Paper whose `client_id` is its own [client ID metadata document](https://datatracker.ietf.org/doc/draft-ietf-oauth-client-id-metadata-document/) (`/oauth/client.json`), so no registration with Paper is needed.
+A Paper session is the cookies Paper's sign-in sets on `paper.design` (only those are kept). Tokens are compressed before sealing, about 3.3 KB each. The account's Durable Object passes the session to its container on each call, one call at a time, and keeps the cookie Paper renews in memory; the next refresh seals that one into the client's new tokens. A container sleeps after 10 idle minutes.
 
-Trade-offs of being stateless:
+Trade-offs:
+- While an account is active, its container holds the Paper session in memory (never on disk or in storage).
+- Sign-in goes through our page to Paper's page: your password or emailed code passes through the Worker and the sign-in container on its way to Paper. Neither stores or logs it.
 - No server-side revocation. To disconnect, remove the server from your client, or end the session in Paper.
 - A code can be replayed within its 60 s, but it is useless without the client's PKCE verifier.
 - Rotating `SEAL_KEY` signs everyone out.
-- Paper's refresh tokens are single use and nothing remembers the last one, so two refreshes racing (or a lost refresh response) end that connection; the client asks you to sign in again.
 
-**Deploy** (Cloudflare Workers, free tier is enough):
+**Deploy** (needs Workers Paid for Containers, and Docker running: wrangler builds the image from `runtime/Dockerfile`):
 
 ```bash
 cd remote
+npm install                           # @cloudflare/containers
 npx wrangler secret put SEAL_KEY      # paste: openssl rand -base64 32
 npx wrangler deploy
 ```
 
-Optional `PUBLIC_URL`: set it when a proxy in front changes the origin the Worker sees (e.g. a tunnel). Local dev: put `SEAL_KEY=…` (and `PUBLIC_URL=…` for a tunnel) in `remote/.dev.vars`, then run `npm run remote:dev`. Paper must be able to fetch `/oauth/client.json`, so a full local sign-in needs a public tunnel (`npx cloudflared tunnel --url http://127.0.0.1:8787`). Run the tests with `npm test`.
+Optional `PUBLIC_URL`: set it when a proxy in front changes the origin the Worker sees (e.g. a tunnel). Local dev, containers included (Docker runs them): put `SEAL_KEY=…` in `remote/.dev.vars`, then `npm run remote:dev`. Run the tests with `npm test`.
 
 The local `npx` server below is still the way to drive the editor directly (and the open file) from your own machine.
 

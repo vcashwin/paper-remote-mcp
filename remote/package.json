@@ -1,0 +1,9 @@
+{
+  "name": "paper-remote-mcp-worker",
+  "private": true,
+  "type": "module",
+  "description": "The Cloudflare Worker: OAuth front door, MCP endpoint, and the Durable Objects that own the runtime containers.",
+  "dependencies": {
+    "@cloudflare/containers": "^0.3.7"
+  }
+}
