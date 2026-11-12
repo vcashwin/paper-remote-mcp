@@ -2,14 +2,16 @@
 // which run in our containers (runtime/, see docs/remote-runtime.md).
 //
 // MCP clients see one OAuth authorization server + protected resource, in the shape the MCP authorization spec asks
-// for. Signing in is Paper's: after consent, our sign-in page asks for the Paper email, and a container (one per
-// sign-in job, PaperSignIn) drives Paper's real sign-in page with what the user types (password, or the emailed code).
+// for. Signing in is Paper's own OAuth (the same flow Paper Desktop uses): after consent, our page opens Paper's
+// hosted sign-in; Paper then shows an "Opening Paper…" page with a paper://auth/callback?code=… link, which the user
+// pastes back. We exchange that code with Paper (POST /auth/desktop-callback, PKCE) for the session — no Paper
+// password or emailed code ever touches this server.
 //
 // Nothing is stored. Everything this server hands out is AES-256-GCM ciphertext under SEAL_KEY, its purpose bound as
 // associated data, and it carries the state it needs:
 //   client_id (DCR)  the registration itself                          /register
 //   state            the client's authorization request (10 min)      /authorize → consent page → /authorize (POST)
-//   flow             that request + a sign-in job id + a nonce (10 min) sign-in pages → /signin
+//   flow             that request + the PKCE verifier for Paper's OAuth + a nonce (10 min)   sign-in page → /signin
 //   code             Paper session cookies + user + the request (60 s) /signin → the client → /token
 //   access token     Paper session cookies, user id, grant id (1 h)     /mcp
 //   refresh token    the same + the client id (30 days)                 /token: checked with Paper, renewals resealed
@@ -27,7 +29,7 @@
 //   POST /token                                        authorization_code, refresh_token
 //   POST /mcp                                          Streamable HTTP (JSON responses)
 import { Container } from '@cloudflare/containers';
-import { cookieHeader, paperCookies } from '../runtime/paper.js';
+import { cookieHeader, desktopSessionCookies, paperCookies } from '../runtime/paper.js';
 import { consentPage, homePage, signInPage } from './page.js';
 
 const REQUEST_TTL = 600,
@@ -35,14 +37,17 @@ const REQUEST_TTL = 600,
   ACCESS_TTL = 3_600,
   REFRESH_TTL = 30 * 86_400,
   CATALOG_TTL = 3_600,
-  CALL_TIMEOUT = 120_000,
-  SIGNIN_TIMEOUT = 90_000; // the runtime may take ~70 s per step: up to 30 s to load Paper's page + 30 s for its answer
+  CALL_TIMEOUT = 120_000;
 const METADATA_MAX_BYTES = 10_240;
 const PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 const UNAVAILABLE = 'Paper is temporarily unavailable';
-const TOO_MANY = 'Too many sign-in attempts. Try again in a few minutes.';
 const PAPER_API = 'https://api.paper.design',
   PAPER_APP = 'https://app.paper.design';
+// Paper's own OAuth, as Paper Desktop signs in: its public first-party client (PKCE, no secret) and the redirect
+// Paper bounces to the desktop-redirect page with.
+const WORKOS_AUTHORIZE = 'https://api.workos.com/user_management/authorize';
+const PAPER_DESKTOP_CLIENT = 'client_01JFDMX4SFDGNY1NN3RRQ4A7Z3';
+const PAPER_DESKTOP_REDIRECT = 'https://workers.paper.design/auth/desktop-redirect?protocol=paper';
 const NO_STORE = { 'cache-control': 'no-store', pragma: 'no-cache' };
 const HTML_HEADERS = {
   'content-type': 'text/html;charset=UTF-8',
@@ -64,10 +69,8 @@ const CORS = {
 /** @typedef {{ status: number, body?: any }} Reply  a container's answer; 504 when it gave none in time */
 /**
  * @typedef {{ run(path: string, body: object): Promise<Reply> }} AccountStub
- * @typedef {{ step(path: string, body: object): Promise<Reply> }} SignInStub
- * @typedef {{ limit(o: { key: string }): Promise<{ success: boolean }> }} RateLimit
- * @typedef {{ SEAL_KEY: string, PUBLIC_URL?: string, SIGNIN_IP_LIMIT: RateLimit, SIGNIN_EMAIL_LIMIT: RateLimit,
- *   PAPER_ACCOUNT: { getByName(name: string): AccountStub }, PAPER_SIGNIN: { getByName(name: string): SignInStub } }} Env
+ * @typedef {{ SEAL_KEY: string, PUBLIC_URL?: string,
+ *   PAPER_ACCOUNT: { getByName(name: string): AccountStub } }} Env
  * @typedef {{ waitUntil(promise: Promise<unknown>): void }} Ctx
  * @typedef {{ tools: object[], instructions?: string }} Catalog
  */
@@ -78,7 +81,8 @@ const CORS = {
 /** @typedef {{ redirectUris: string[], name?: string, logoUri?: string }} ClientMetadata */
 /** @typedef {{ s: Cookie[], u: string, r: string, g: string, c: string }} Grant */
 // Sealed payloads use one-letter keys to keep tokens short: s = Paper session cookies, u = Paper user (id), r =
-// resource, c = client id, g = grant id (the agent id Paper sees), a = authorization request, j = job id, n = nonce.
+// resource, c = client id, g = grant id (the agent id Paper sees), a = authorization request, v = PKCE verifier
+// (for Paper's own OAuth), n = nonce.
 
 const enc = new TextEncoder(),
   dec = new TextDecoder();
@@ -374,7 +378,43 @@ async function authorizePage(/** @type {URL} */ url, /** @type {Env} */ env) {
   return page(html, [setCookie('CSRF', csrf, REQUEST_TTL)]);
 }
 
-/** The consent page's answer: back to the client (Cancel), or on to the Paper sign-in page (Continue). */
+/** Paper's hosted sign-in URL for our PKCE verifier: the desktop OAuth client's authorize request. */
+async function paperAuthorizeUrl(/** @type {string} */ verifier) {
+  const u = new URL(WORKOS_AUTHORIZE);
+  u.searchParams.set('client_id', PAPER_DESKTOP_CLIENT);
+  u.searchParams.set('redirect_uri', PAPER_DESKTOP_REDIRECT);
+  u.searchParams.set('response_type', 'code');
+  u.searchParams.set('provider', 'authkit');
+  u.searchParams.set('code_challenge', await s256(verifier));
+  u.searchParams.set('code_challenge_method', 'S256');
+  u.searchParams.set('state', random(12));
+  return u.href;
+}
+
+/** The one-time code out of a pasted `paper://auth/callback?code=…` link (or a bare code) @param {string} text */
+const codeFromPaste = (text) =>
+  (/[?&]code=([0-9A-Za-z_-]+)/.exec(text.trim()) ?? /^([0-9A-HJKMNP-TV-Z]{26})$/.exec(text.trim()))?.[1];
+
+/**
+ * The code for a Paper session, through Paper's own bridge (what Paper Desktop does after its OAuth redirect).
+ * null: Paper refused it (bad, used or expired code); undefined: Paper couldn't be asked.
+ * @param {string} code @param {string} verifier
+ * @returns {Promise<{ sealedSession: string, cosmeticInfo: unknown } | null | undefined>}
+ */
+async function paperExchange(code, verifier) {
+  const res = await fetch(`${PAPER_API}/auth/desktop-callback`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: PAPER_APP },
+    body: JSON.stringify({ code, codeVerifier: verifier }),
+    signal: AbortSignal.timeout(15_000),
+  }).catch(() => undefined);
+  const body = res?.ok ? await res.json().catch(() => undefined) : undefined;
+  if (!res) return undefined;
+  if (typeof body?.sealedSession !== 'string') return null;
+  return body;
+}
+
+/** The consent page's answer: back to the client (Cancel), or on to Paper's own sign-in page (Continue). */
 async function consent(/** @type {Request} */ request, /** @type {URL} */ url, /** @type {Env} */ env) {
   const form = new URLSearchParams(await request.text());
   const csrf = form.get('csrf_token') ?? '';
@@ -388,59 +428,47 @@ async function consent(/** @type {Request} */ request, /** @type {URL} */ url, /
       clear,
     ]);
   }
-  // a fresh sign-in job, bound to this browser by the nonce cookie (no login CSRF, nobody else can drive the job)
+  // A fresh PKCE pair for Paper's OAuth; the flow (verifier inside) is bound to this browser by the nonce cookie.
   const nonce = random();
-  const flow = await seal(env, 'signin', { a: authRequest, j: random(), n: nonce }, REQUEST_TTL);
-  return signInStep({ flow, step: 'email' }, [clear, setCookie('SIGNIN', nonce, REQUEST_TTL)]);
+  const verifier = random(48);
+  const flow = await seal(env, 'signin', { a: authRequest, v: verifier, n: nonce }, REQUEST_TTL);
+  const paperUrl = await paperAuthorizeUrl(verifier);
+  return signInStep({ flow, paperUrl }, [clear, setCookie('SIGNIN', nonce, REQUEST_TTL)]);
 }
 
 /**
- * A sign-in page's answer, passed to the job's container. Its next step is the next page; `done` sends the client
- * our code. The email, password and code go to the container only: never logged, never sealed.
+ * The sign-in page's answer: the paper:// link the user pasted from Paper's "Opening Paper…" page. Its code is
+ * exchanged with Paper (the verifier never left its sealed flow) for the session, and the client gets our code.
  */
 async function signIn(/** @type {Request} */ request, /** @type {URL} */ url, /** @type {Env} */ env) {
   const form = new URLSearchParams(await request.text());
   const flow = form.get('flow') ?? '';
-  /** @type {{ a: AuthRequest, j: string, n: string } | undefined} */
+  /** @type {{ a: AuthRequest, v: string, n: string } | undefined} */
   const job = await open(env, 'signin', flow);
   if (!job || !hasCookie(request, 'SIGNIN', job.n)) {
     return plain('This sign-in has expired. Start again from your MCP client.');
   }
-  const email = (form.get('email') ?? '').trim().slice(0, 320);
-  const asked = form.get('step');
-  const step = asked === 'password' || asked === 'code' ? asked : 'email';
-  // Abuse limits (each step drives a browser): every step per IP, and sign-in starts per email (hashed: no address
-  // reaches the limiter). Over either, the same page says so.
-  const ip = request.headers.get('cf-connecting-ip') ?? 'unknown';
-  const over = async (/** @type {RateLimit} */ limiter, /** @type {string} */ key) =>
-    !(await limiter.limit({ key })).success;
-  if (
-    (await over(env.SIGNIN_IP_LIMIT, ip)) ||
-    (step === 'email' && (await over(env.SIGNIN_EMAIL_LIMIT, await s256(email.toLowerCase()))))
-  ) {
-    return signInStep({ flow, step, email, message: TOO_MANY }, [], 429);
-  }
-  const container = env.PAPER_SIGNIN.getByName(job.j);
-  const { status, body } =
-    step === 'email'
-      ? await container.step('/signin/start', { email })
-      : await container.step('/signin/continue', { value: (form.get('value') ?? '').slice(0, 1024) });
+  const paperUrl = await paperAuthorizeUrl(job.v);
+  const again = (/** @type {string} */ message, /** @type {number} */ status = 200) =>
+    signInStep({ flow, paperUrl, message }, [], status);
 
-  const cookies = Array.isArray(body?.session?.cookies) ? paperCookies(body.session.cookies) : [];
-  if (status === 200 && body?.step === 'done' && typeof body.user?.id === 'string' && cookies.length) {
-    const { a } = job;
-    // ponytail: nothing is stored, so a code is not single-use; it lives 60 s and is useless without the PKCE verifier.
-    const code = await seal(env, 'code', { a, s: cookies, u: body.user }, CODE_TTL);
-    return redirect(a.redirectUri, { code, state: a.state, iss: url.origin }, [setCookie('SIGNIN', job.n, 0)]);
+  const code = codeFromPaste(form.get('link') ?? '');
+  if (!code) {
+    return again('That does not look like Paper\u2019s link. On the \u201cOpening Paper\u2026\u201d page, copy the \u201cclick here\u201d link and paste it whole.');
   }
-  if (status === 200 && (body?.step === 'password' || body?.step === 'code')) {
-    return signInStep({ flow, step: body.step, email, message: body.message });
+  const exchanged = await paperExchange(code, job.v);
+  if (exchanged === undefined) return again(`${UNAVAILABLE}. Try again.`);
+  if (exchanged === null) {
+    return again('Paper refused that link: it may have expired or already been used. Open Paper sign-in again and paste the new link.');
   }
-  // No answer in time: the same step again. The job carries on, and keeps a `done` for 60 s for the resubmission.
-  if (status === 504) return signInStep({ flow, step, email, message: `${UNAVAILABLE}. Submit again to continue.` });
-  // `error`, or the container failed: Paper's message (or ours), and the email again to start over
-  const message = (status === 200 || status === 400) && body ? (body.message ?? body.error?.message) : undefined;
-  return signInStep({ flow, step: 'email', email, message: message || `${UNAVAILABLE}. Try again.` });
+  const cookies = desktopSessionCookies(exchanged.sealedSession, exchanged.cosmeticInfo);
+  const me = await paperWhoAmI(cookies);
+  if (me === null) return again('Paper did not accept the new session. Try again.');
+  if (!me) return again(`${UNAVAILABLE}. Try again.`);
+  const { a } = job;
+  // ponytail: nothing is stored, so a code is not single-use; it lives 60 s and is useless without the PKCE verifier.
+  const ourCode = await seal(env, 'code', { a, s: paperCookies(me.cookies), u: me.user }, CODE_TTL);
+  return redirect(a.redirectUri, { code: ourCode, state: a.state, iss: url.origin }, [setCookie('SIGNIN', job.n, 0)]);
 }
 
 /** Seals a grant into the client's token pair. @param {{ SEAL_KEY: string }} env @param {Grant} grant */
@@ -495,11 +523,12 @@ export function renewCookies(cookies, lines, host) {
 }
 
 /**
- * Whether Paper still signs in `user` with these cookies (GET /auth/me): the cookies with Paper's renewals; null when
- * Paper says signed out; undefined when Paper couldn't say (unreachable or failing: the session may well be fine)
- * @param {Cookie[]} cookies @param {string} user @returns {Promise<Cookie[] | null | undefined>}
+ * Who these cookies sign in as (GET /auth/me): the user and the cookies with Paper's renewals merged in; null when
+ * Paper says signed out; undefined when Paper couldn't say (unreachable or failing: the session may well be fine).
+ * @param {Cookie[]} cookies
+ * @returns {Promise<{ user: { id: string, email: string, name?: string }, cookies: Cookie[] } | null | undefined>}
  */
-export async function paperSession(cookies, user) {
+export async function paperWhoAmI(cookies) {
   const res = await fetch(`${PAPER_API}/auth/me`, {
     headers: { cookie: cookieHeader(cookies), origin: PAPER_APP, accept: 'application/json' },
     signal: AbortSignal.timeout(10_000),
@@ -507,8 +536,21 @@ export async function paperSession(cookies, user) {
   if (res?.status === 401) return null;
   if (res?.status !== 200) return undefined;
   const me = await res.json().catch(() => undefined);
-  if (!me) return undefined;
-  return me.user?.id === user ? renewCookies(cookies, res.headers.getSetCookie(), new URL(PAPER_API).host) : null;
+  const id = me?.user?.id;
+  if (typeof id !== 'string') return undefined;
+  const name = [me.user.firstName, me.user.lastName].filter(Boolean).join(' ');
+  const user = { id, email: String(me.user.email ?? ''), ...(name && { name }) };
+  return { user, cookies: renewCookies(cookies, res.headers.getSetCookie(), new URL(PAPER_API).host) };
+}
+
+/**
+ * Whether Paper still signs in `user` with these cookies: the cookies with Paper's renewals; null when Paper says
+ * signed out; undefined when Paper couldn't say.
+ * @param {Cookie[]} cookies @param {string} user @returns {Promise<Cookie[] | null | undefined>}
+ */
+export async function paperSession(cookies, user) {
+  const me = await paperWhoAmI(cookies);
+  return me === null ? null : me === undefined ? undefined : me.user.id === user ? me.cookies : null;
 }
 
 async function token(/** @type {Request} */ request, /** @type {URL} */ url, /** @type {Env} */ env) {
@@ -787,21 +829,6 @@ export class PaperAccount extends Container {
       () => {},
       () => {},
     );
-    return reply;
-  }
-}
-
-/** One sign-in job (named by a random id): its container drives Paper's sign-in page, step by step. */
-export class PaperSignIn extends Container {
-  defaultPort = 8080;
-  sleepAfter = '2m';
-  pingEndpoint = 'container/healthz';
-
-  /** RPC: `/signin/start` or `/signin/continue` @param {string} path @param {object} body */
-  async step(path, body) {
-    const reply = await post(this, path, body, SIGNIN_TIMEOUT);
-    // done (the session is in the reply) or failed: this job's browser has nothing left to do
-    if (reply.body?.step === 'done' || reply.body?.step === 'error') this.stop().catch(() => {});
     return reply;
   }
 }

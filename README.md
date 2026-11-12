@@ -16,7 +16,7 @@ claude mcp add paper -- npx -y paper-remote-mcp mcp
 
 ## Remote server (OAuth, nothing to install)
 
-`remote/` is a hosted way in: one URL, OAuth in the browser, nothing to install. A Cloudflare Worker is the OAuth front door and the MCP endpoint; Paper's own MCP tools run in a container per active Paper account (`runtime/`, see [docs/remote-runtime.md](docs/remote-runtime.md)). Signing in happens on our page: you give your Paper email, and a short-lived container drives Paper's real sign-in page with what you type (your password, or the code Paper emails you). The pages use Linefold's design system.
+`remote/` is a hosted way in: one URL, OAuth in the browser, nothing to install. A Cloudflare Worker is the OAuth front door and the MCP endpoint; Paper's own MCP tools run in a container per active Paper account (`runtime/`, see [docs/remote-runtime.md](docs/remote-runtime.md)). Signing in is Paper's own OAuth (the same flow Paper Desktop uses): our page opens Paper's hosted sign-in, and you paste back the one-time link Paper shows afterwards — your Paper password never touches this server. The pages use Linefold's design system.
 
 ```bash
 claude mcp add --transport http paper https://<your-worker>/mcp
@@ -24,9 +24,9 @@ claude mcp add --transport http paper https://<your-worker>/mcp
 
 ```
   MCP client ──OAuth 2.1 (DCR or CIMD, PKCE)──► remote/worker.js (Cloudflare Worker)
-      │                                            │ consent → sign-in pages
+      │                                            │ consent → sign-in page
       │                                            ▼
-      │                                PaperSignIn DO ─► container: Paper's sign-in page ─► session cookies
+      │                                Paper's hosted sign-in (OAuth, PKCE) ─► paste link ─► session cookies
       │
       └──── /mcp, Bearer <sealed session> ─► Worker ─► PaperAccount DO (per Paper user) ─► container: Paper's tools
 ```
@@ -44,13 +44,12 @@ A Paper session is the cookies Paper's sign-in sets for its app on `paper.design
 
 **Trust: read this before you deploy or connect.**
 
-- **You type your Paper password on this server's domain, not Paper's.** That is what a phishing page looks like. Only sign in on an instance you (or someone you trust) deployed, and check the URL. The consent page shows where the client's code goes and marks clients that registered themselves (DCR) as unverified.
-- Your password or emailed code passes through the Worker and the sign-in container on its way to Paper's real sign-in page. Neither stores or logs it.
+- **Sign-in happens on Paper's own page, never this server.** You authenticate with Paper directly (its hosted OAuth, the same client Paper Desktop uses); afterwards Paper shows an "Opening Paper…" page and you paste its one-time link back. The server exchanges that link with Paper (PKCE) for the session — your Paper password and emailed codes never touch it. Still, only connect to an instance you (or someone you trust) deployed, and check the URL: the consent page shows where the client's code goes and marks clients that registered themselves (DCR) as unverified.
 - **Every token carries a live Paper session**, sealed under `SEAL_KEY`. Whoever has `SEAL_KEY` and a token can act as you in Paper. A leaked `SEAL_KEY` exposes every session in every outstanding token until its refresh token expires (30 days) or the user signs out in Paper; rotating it signs everyone out.
 - **Revoking = signing out in Paper.** There is no server-side revocation (nothing is stored); an access token keeps working until it expires, so a sign-out takes effect within an hour. Removing the server from your client just drops its tokens.
 - While an account is active, its container holds the Paper session in memory (never on disk or in storage).
 - A code can be replayed within its 60 s, but it is useless without the client's PKCE verifier.
-- Sign-in is rate limited (Workers Rate Limiting): 10 steps a minute per IP, 2 sign-in starts a minute per email. Containers are capped by `max_instances` in `remote/wrangler.toml` (cost and capacity knobs).
+- Sign-in rides Paper Desktop's public OAuth client; if Paper rotates it or tightens the exchange, sign-in breaks until the flow is re-extracted. Containers are capped by `max_instances` in `remote/wrangler.toml` (cost and capacity knobs).
 
 **Deploy** (needs **Workers Paid** for Containers, and Docker running: wrangler builds the image from `runtime/Dockerfile`):
 

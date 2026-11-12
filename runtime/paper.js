@@ -36,6 +36,43 @@ export const paperCookies = (cookies) =>
 /** The `Cookie` header Paper's API expects from these cookies @param {{ name: string, value: string }[]} cookies */
 export const cookieHeader = (cookies) => cookies.map((c) => `${c.name}=${c.value}`).join('; ');
 
+/** The `.paper.design` cookies a Paper session is made of (names are Paper's own, from its desktop app). */
+export const SESSION_COOKIE = 'D7pPzj4phQRAjBC01';
+// Without this one Paper's auth bootstrap never fetches /auth/refresh (it skips loadUser) and redirects to sign-in.
+export const PREAUTH_COOKIE = 'paper-preauth-user-info';
+const SESSION_MAX_AGE = 2_937_600; // 34 days, what Paper sets
+
+/**
+ * The session cookies for a desktop-callback answer (`POST api.paper.design/auth/desktop-callback`, Paper's own
+ * OAuth bridge): the sealed session raw, and the cosmetic preauth cookie Paper's auth bootstrap needs.
+ * @param {string} sealedSession @param {unknown} cosmeticInfo @returns {Cookie[]}
+ */
+export function desktopSessionCookies(sealedSession, cosmeticInfo) {
+  const expires = Math.floor(Date.now() / 1000) + SESSION_MAX_AGE;
+  return [
+    {
+      name: SESSION_COOKIE,
+      value: String(sealedSession),
+      domain: '.paper.design',
+      path: '/',
+      expires,
+      httpOnly: true,
+      secure: true,
+      sameSite: 'Lax',
+    },
+    {
+      name: PREAUTH_COOKIE,
+      value: encodeURIComponent(JSON.stringify(cosmeticInfo ?? {})),
+      domain: '.paper.design',
+      path: '/',
+      expires,
+      httpOnly: false,
+      secure: true,
+      sameSite: 'Lax',
+    },
+  ];
+}
+
 /** @typedef {{ name: string, value: string, domain: string, path?: string, expires?: number, httpOnly?: boolean,
  *   secure?: boolean, sameSite?: 'Strict' | 'Lax' | 'None' }} Cookie  a Playwright cookie */
 /** @typedef {{ cookies: Cookie[] }} Session */

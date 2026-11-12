@@ -13,7 +13,7 @@ const HOOKS = `export async function resolve(specifier, context, next) {
     : next(specifier, context);
 }`;
 register(`data:text/javascript,${encodeURIComponent(HOOKS)}`);
-const { default: worker, open, seal, renewCookies, PaperAccount, PaperSignIn } = await import('./worker.js');
+const { default: worker, open, seal, renewCookies, PaperAccount } = await import('./worker.js');
 
 const ORIGIN = 'https://paper-mcp.example';
 const REGISTERED = 'http://127.0.0.1:33418/callback';
@@ -49,35 +49,8 @@ const seen = /** @type {[string, string, string, any][]} */ ([]);
 /** The last request a `kind` container got (at `path`) @param {string} kind @param {string} [path] */
 const last = (kind, path) => seen.filter((r) => r[0] === kind && (!path || r[2] === path)).at(-1) ?? ['', '', '', {}];
 const LIMIT = 'Weekly MCP limit reached. It resets tomorrow.';
-/** Sign-in jobs' emails, by job */
-const emails = new Map();
 let running = 0,
   maxRunning = 0;
-
-/** Jobs whose answer came too late for the Worker: their `done` is kept for the next try */
-const kept = new Set();
-
-/**
- * The sign-in container: `pw…` emails get a password step, `code…` a code step; `wrong` is a wrong answer, `slow`
- * answers after the Worker gave up (the runtime then keeps `done` for the same step's retry)
- */
-async function signInContainer(/** @type {string} */ job, /** @type {string} */ path, /** @type {any} */ body) {
-  if (path === '/signin/start') {
-    emails.set(job, body.email);
-    if (body.email.startsWith('down'))
-      return Response.json({ error: { code: 'internal', message: 'boom' } }, { status: 500 });
-    if (body.email.startsWith('nobody'))
-      return Response.json({ step: 'error', message: 'No Paper account for that email' });
-    return Response.json({ step: body.email.startsWith('code') ? 'code' : 'password' });
-  }
-  if (body.value === 'wrong') return Response.json({ step: 'password', message: 'Incorrect password' });
-  if (body.value === 'slow' && !kept.has(job)) {
-    kept.add(job);
-    throw new DOMException('The operation timed out', 'TimeoutError');
-  }
-  const email = emails.get(job) ?? '';
-  return Response.json({ step: 'done', session: SESSION, user: { id: `user-${email}`, email } });
-}
 
 /** The account container: tool names choose the outcome */
 async function accountContainer(/** @type {string} */ _user, /** @type {string} */ path, /** @type {any} */ body) {
@@ -123,24 +96,9 @@ function namespace(/** @type {any} */ Class, /** @type {string} */ kind, /** @ty
   };
 }
 
-/** A Workers Rate Limiting binding: `limit` calls per key, then refused @param {number} limit */
-function rateLimit(limit) {
-  const counts = new Map();
-  return {
-    counts,
-    async limit(/** @type {{ key: string }} */ { key }) {
-      counts.set(key, (counts.get(key) ?? 0) + 1);
-      return { success: counts.get(key) <= limit };
-    },
-  };
-}
-
 const env = {
   SEAL_KEY: randomBytes(32).toString('base64'),
   PAPER_ACCOUNT: namespace(PaperAccount, 'account', accountContainer),
-  PAPER_SIGNIN: namespace(PaperSignIn, 'signin', signInContainer),
-  SIGNIN_IP_LIMIT: rateLimit(1000),
-  SIGNIN_EMAIL_LIMIT: rateLimit(1000),
 };
 /** What the Worker left running after its response (ctx.waitUntil) */
 const background = /** @type {Promise<unknown>[]} */ ([]);
@@ -152,9 +110,24 @@ const ctx = { waitUntil: (/** @type {Promise<unknown>} */ p) => background.push(
 const paper = { me: /** @type {number | 'down'} */ (200), renewals: /** @type {string[]} */ ([]), asked: 0 };
 /** Client ID metadata documents, by URL */
 const documents = new Map();
+/**
+ * Paper's own OAuth bridge: what /auth/desktop-callback answers per pasted code. 'good-code' signs in as the
+ * example user, 'broken-code' as one whose container fails; 'used-code' is refused; 'down-code' never answers.
+ */
 globalThis.fetch = async (/** @type {RequestInfo | URL} */ input, /** @type {RequestInit} */ init = {}) => {
   const url = String(input instanceof Request ? input.url : input);
   if (documents.has(url)) return Response.json(documents.get(url));
+  if (url === 'https://api.paper.design/auth/desktop-callback') {
+    const body = JSON.parse(String(init?.body ?? '{}'));
+    if (typeof body.codeVerifier !== 'string' || !body.codeVerifier) throw new Error('no PKCE verifier sent');
+    if (body.code === 'down-code') throw new TypeError('fetch failed');
+    if (body.code === 'used-code') return Response.json({ success: false, errorMessage: 'Code expired or used' });
+    return Response.json({
+      success: true,
+      sealedSession: body.code === 'broken-code' ? 'mark-broken' : SESSION.cookies[0].value,
+      cosmeticInfo: { firstName: 'Test', lastName: 'User' },
+    });
+  }
   assert.equal(url, 'https://api.paper.design/auth/me', 'no other fetch');
   paper.asked++;
   if (paper.me === 'down') throw new TypeError('fetch failed');
@@ -162,7 +135,11 @@ globalThis.fetch = async (/** @type {RequestInfo | URL} */ input, /** @type {Req
   const headers = new Headers({ 'content-type': 'application/json' });
   for (const c of paper.renewals) headers.append('set-cookie', c);
   // the user id is the session cookie's value's owner: whatever the token says, unless it's a stolen one
-  const id = sent.includes('other-user') ? 'someone-else' : 'user-me@example.com';
+  const id = sent.includes('mark-broken')
+    ? 'user-broken@example.com'
+    : sent.includes('other-user')
+      ? 'someone-else'
+      : 'user-me@example.com';
   return new Response(paper.me === 200 ? JSON.stringify({ user: { id } }) : '{}', { status: paper.me, headers });
 };
 
@@ -219,31 +196,37 @@ async function consentPage() {
   };
 }
 
-/** Consent → the sign-in page: the sealed flow and the browser's SIGNIN cookie. */
+/** Consent → the sign-in page: the sealed flow, Paper's sign-in URL and the browser's SIGNIN cookie. */
 async function startSignIn() {
   const { client_id, state, csrfToken, csrf } = await consentPage();
   const res = await call('/authorize', form({ state, csrf_token: csrfToken, action: 'approve' }, csrf));
   assert.equal(res.status, 200);
   const html = await res.text();
-  assert.match(html, /name="email"/);
+  assert.match(html, /Sign in with Paper/);
+  const paperUrl = /href="([^"]+)" target="_blank"/.exec(html)?.[1] ?? '';
+  assert.ok(
+    paperUrl.startsWith('https://api.workos.com/user_management/authorize?'),
+    'the link is Paper’s own hosted OAuth',
+  );
+  assert.ok(paperUrl.includes('code_challenge='), 'PKCE to Paper');
+  assert.match(html, /name="link"/, 'the paste box');
   assert.match(cookieSet(res, '__Host-CSRF-'), /=$/, 'the CSRF cookie is cleared');
-  return { client_id, flow: field(html, 'flow'), cookie: cookieSet(res, '__Host-SIGNIN-') };
+  return { client_id, flow: field(html, 'flow'), cookie: cookieSet(res, '__Host-SIGNIN-'), paperUrl };
 }
 
 /** One sign-in page's answer @param {{ flow: string, cookie: string }} s @param {Record<string, string>} fields */
 const answer = (s, fields) => call('/signin', form({ flow: s.flow, ...fields }, s.cookie));
 
-/** The whole sign-in, password path: the client's code @param {string} email */
-async function signIn(email) {
+/** The whole sign-in: paste the paper:// link Paper showed → the client's code. */
+async function signIn() {
   const s = await startSignIn();
-  const pw = await answer(s, { step: 'email', email });
-  assert.match(await pw.text(), /type="password"/);
-  const back = await answer(s, { step: 'password', email, value: 'right' });
+  const back = await answer(s, { link: 'paper://auth/callback?code=good-code' });
   assert.equal(back.status, 302);
   const to = location(back);
   assert.equal(`${to.origin}${to.pathname}`, REDIRECT);
   assert.equal(to.searchParams.get('state'), 'client-state');
   assert.equal(to.searchParams.get('iss'), ORIGIN);
+  assert.match(cookieSet(back, '__Host-SIGNIN-'), /=$/, 'the sign-in cookie is cleared');
   return { client_id: s.client_id, code: to.searchParams.get('code') ?? '', back, s };
 }
 
@@ -251,12 +234,15 @@ async function signIn(email) {
 const redeem = (client_id, code, extra = {}) =>
   call('/token', form({ grant_type: 'authorization_code', code, client_id, code_verifier: verifier, ...extra }));
 
-/** Signed in and redeemed: the client's tokens @param {string} email */
-async function connect(email) {
-  const { client_id, code } = await signIn(email);
-  const res = await redeem(client_id, code);
+/** Signed in and redeemed: the client's tokens @param {string} [pasteCode] */
+async function connect(pasteCode = 'good-code') {
+  const s = await startSignIn();
+  const back = await answer(s, { link: `paper://auth/callback?code=${pasteCode}` });
+  assert.equal(back.status, 302);
+  const code = location(back).searchParams.get('code') ?? '';
+  const res = await redeem(s.client_id, code);
   assert.equal(res.status, 200);
-  return { client_id, ...(await res.json()) };
+  return { client_id: s.client_id, ...(await res.json()) };
 }
 
 /** One JSON-RPC message to /mcp @param {string} token @param {object} msg @param {Record<string, string>} [headers] */
@@ -290,26 +276,9 @@ test('metadata and the 401 challenge point clients at this server', async () => 
   assert.equal((await call('/oauth/client.json')).status, 404, 'no upstream OAuth client any more');
 });
 
-test('register → consent → sign-in (password) → code → token → MCP', async (t) => {
-  const s = await startSignIn();
-  const pw = await answer(s, { step: 'email', email: 'pw@example.com' });
-  const pwPage = await pw.text();
-  assert.match(pwPage, /autocomplete="current-password"/);
-  assert.match(pwPage, /pw@example\.com/);
-  const wrong = await (await answer(s, { step: 'password', email: 'pw@example.com', value: 'wrong' })).text();
-  assert.match(wrong, /role="alert".*Incorrect password/, "Paper's error text is shown");
-  assert.match(wrong, /type="password"/, 'and the password asked again');
-
-  const back = await answer(s, { step: 'password', email: 'pw@example.com', value: 'right' });
-  assert.equal(back.status, 302);
-  const to = location(back);
-  assert.equal(`${to.origin}${to.pathname}`, REDIRECT);
-  assert.equal(to.searchParams.get('state'), 'client-state');
-  assert.equal(to.searchParams.get('iss'), ORIGIN);
-  assert.match(cookieSet(back, '__Host-SIGNIN-'), /=$/, 'the sign-in cookie is cleared');
-  const job = last('signin')[1];
-  assert.equal(env.PAPER_SIGNIN.objects.get(job)?.stopped, true, 'the sign-in container stops once done');
-  const code = to.searchParams.get('code') ?? '';
+test('register → consent → sign in with Paper (OAuth paste) → code → token → MCP', async (t) => {
+  const { client_id, code } = await signIn();
+  const s = { client_id };
   assert.ok(!code.includes(SESSION.cookies[0].name), 'the session only travels sealed');
 
   const bad = await redeem(s.client_id, code, { code_verifier: 'x'.repeat(43) });
@@ -331,8 +300,20 @@ test('register → consent → sign-in (password) → code → token → MCP', a
   );
   assert.ok(tok.access_token.length < 6000 && tok.refresh_token.length < 6000, 'tokens stay well under 8 KB');
   const access = await open(env, 'access', tok.access_token);
-  assert.equal(access?.u, 'user-pw@example.com');
-  assert.deepEqual(access?.s, [SESSION.cookies[0], SESSION.cookies[2]], "only Paper's session cookies are kept");
+  assert.equal(access?.u, 'user-me@example.com');
+  assert.deepEqual(
+    access?.s.map((/** @type {any} */ c) => [c.name, c.value, c.domain, c.httpOnly]),
+    [
+      ['D7pPzj4phQRAjBC01', SESSION.cookies[0].value, '.paper.design', true],
+      [
+        'paper-preauth-user-info',
+        encodeURIComponent('{"firstName":"Test","lastName":"User"}'),
+        '.paper.design',
+        false,
+      ],
+    ],
+    'the OAuth-minted session cookies: the sealed session raw, and the preauth cookie',
+  );
   const refreshToken = await open(env, 'refresh', tok.refresh_token);
   assert.ok(Math.abs(access.exp - Date.now() / 1000 - 3_600) < 5, 'access tokens live an hour');
   assert.ok(Math.abs(refreshToken.exp - Date.now() / 1000 - 30 * 86_400) < 5, 'refresh tokens 30 days');
@@ -389,33 +370,36 @@ test('register → consent → sign-in (password) → code → token → MCP', a
   );
 });
 
-test('sign-in, code path: the code Paper emailed', async () => {
+test('sign-in: the paste accepts a bare code; garbage, refused and dead Paper all say so on the page', async () => {
+  const bare = await startSignIn();
+  const ok = await answer(bare, { link: '01M78TD6ZQKGWGF625KW1XMT8E' });
+  assert.equal(ok.status, 302, 'a bare code pastes too');
+
   const s = await startSignIn();
-  const page = await (await answer(s, { step: 'email', email: 'code@example.com' })).text();
-  assert.match(page, /The code Paper emailed you/);
-  assert.match(page, /autocomplete="one-time-code"/);
-  const back = await answer(s, { step: 'code', email: 'code@example.com', value: '123456' });
+  const garbage = await (await answer(s, { link: 'https://example.com/nope' })).text();
+  assert.match(garbage, /does not look like Paper’s link/);
+  assert.match(garbage, /name="link"/, 'the paste box again');
+  const used = await (await answer(s, { link: 'paper://auth/callback?code=used-code' })).text();
+  assert.match(used, /Paper refused that link/);
+  assert.match(used, /api\.workos\.com\/user_management\/authorize/, 'Paper’s sign-in is offered again');
+  const down = await (await answer(s, { link: 'paper://auth/callback?code=down-code' })).text();
+  assert.match(down, /Paper is temporarily unavailable/);
+  assert.doesNotMatch(down, /fetch failed/, 'internal errors stay internal');
+  const noCookie = await call('/signin', form({ flow: s.flow, link: 'paper://auth/callback?code=good-code' }));
+  assert.equal(noCookie.status, 400, 'the flow is bound to the browser that consented');
+  const forged = await call(
+    '/signin',
+    form({ flow: 'forged', link: 'paper://auth/callback?code=good-code' }, s.cookie),
+  );
+  assert.equal(forged.status, 400);
+  // the flow still completes after those errors
+  const back = await answer(s, { link: 'paper://auth/callback?code=good-code' });
   assert.equal(back.status, 302);
   assert.ok(location(back).searchParams.get('code'));
-  assert.deepEqual(last('signin').slice(2), ['/signin/continue', { value: '123456' }]);
-});
-
-test("sign-in: Paper's error starts over with its message; a failing container is unavailable; no cookie, no job", async () => {
-  const s = await startSignIn();
-  const nobody = await (await answer(s, { step: 'email', email: 'nobody@example.com' })).text();
-  assert.match(nobody, /No Paper account for that email/);
-  assert.match(nobody, /name="email" autocomplete="username"/);
-  const down = await (await answer(s, { step: 'email', email: 'down@example.com' })).text();
-  assert.match(down, /Paper is temporarily unavailable/);
-  assert.doesNotMatch(down, /boom/, 'internal errors stay internal');
-  const noCookie = await call('/signin', form({ flow: s.flow, step: 'email', email: 'pw@example.com' }));
-  assert.equal(noCookie.status, 400, 'the job is bound to the browser that consented');
-  const forged = await call('/signin', form({ flow: 'forged', step: 'email', email: 'pw@example.com' }, s.cookie));
-  assert.equal(forged.status, 400);
 });
 
 test("refresh asks Paper: signed in → new tokens with Paper's renewals; signed out → sign in again", async () => {
-  const tok = await connect('pw-me@example.com');
+  const tok = await connect();
   // the fake /auth/me knows this user as user-me@example.com
   const grant = await open(env, 'refresh', tok.refresh_token);
   const mine = await seal(env, 'refresh', { ...grant, u: 'user-me@example.com' }, 60);
@@ -461,7 +445,7 @@ test("refresh asks Paper: signed in → new tokens with Paper's renewals; signed
     renewCookies(cookies, [`${sessionName}=; Domain=.paper.design; Path=/; Max-Age=0`], 'api.paper.design').map(
       (/** @type {any} */ c) => c.name,
     ),
-    ['device', 'fresh'],
+    ['D7pPzj4phQRAjBC01', 'paper-preauth-user-info', 'fresh'],
     'a cookie Paper deletes goes',
   );
 
@@ -496,7 +480,7 @@ test("the container's 401 is the client's 401; a limit or a crash is a tool erro
   assert.match(res.headers.get('www-authenticate') ?? '', /error="invalid_token"/);
   assert.equal((await rpc(expired, { id: 1, method: 'tools/list' })).status, 401);
 
-  const tok = await connect('pw-tools@example.com');
+  const tok = await connect();
   // Paper's weekly limit, as the container's 429 or as Paper's own tool result: a tool error with Paper's words
   for (const name of ['limited', 'limited-result']) {
     const res = await rpc(tok.access_token, { id: 8, method: 'tools/call', params: { name } });
@@ -513,14 +497,14 @@ test("the container's 401 is the client's 401; a limit or a crash is a tool erro
   await Promise.all([1, 2, 3].map(() => tool(tok.access_token, 'get_basic_info')));
   assert.equal(maxRunning, 1, "one account's calls are serialised");
 
-  const broken = await connect('pw-broken@example.com');
+  const broken = await connect('broken-code');
   const list = await (await rpc(broken.access_token, { id: 7, method: 'tools/list' })).json();
   assert.equal(list.error.message, 'Paper is temporarily unavailable');
 });
 
 test("token purposes don't cross; a token for another resource is refused", async () => {
-  const tok = await connect('pw-purpose@example.com');
-  const { code } = await signIn('pw-purpose@example.com');
+  const tok = await connect();
+  const { code } = await signIn();
   for (const bearer of [tok.refresh_token, code]) {
     assert.equal((await rpc(bearer, { id: 1, method: 'ping' })).status, 401);
   }
@@ -575,56 +559,16 @@ test('authorize refuses unregistered redirects, missing PKCE, script redirects a
   assert.equal((await call('/authorize?client_id=forged')).status, 400);
 });
 
-test('sign-in abuse limits: per IP on every step, per email on starts; over either, the page says so', async () => {
+test('sign-in: a pending Continue (nonce script), and the page is a locked-down form', async () => {
   const s = await startSignIn();
-  const ip = { 'cf-connecting-ip': '203.0.113.9' };
-  const answerFrom = (/** @type {Record<string, string>} */ fields, /** @type {object} */ headers = ip) =>
-    call('/signin', {
-      ...form({ flow: s.flow, ...fields }, s.cookie),
-      headers: { ...form({}, s.cookie).headers, ...headers },
-    });
-  const before = seen.length;
-  env.SIGNIN_EMAIL_LIMIT = rateLimit(2);
-  for (const _ of [1, 2])
-    assert.equal((await answerFrom({ step: 'email', email: 'pw-limit@example.com' })).status, 200);
-  const third = await answerFrom({ step: 'email', email: 'PW-limit@example.com' });
-  assert.equal(third.status, 429, 'the email (any case) is limited');
-  assert.match(await third.text(), /Too many sign-in attempts\. Try again in a few minutes\./);
-  assert.equal(seen.length, before + 2, 'no container was asked');
-  assert.ok(![...env.SIGNIN_EMAIL_LIMIT.counts.keys()].some((k) => k.includes('@')), 'emails are hashed');
-  assert.equal((await answerFrom({ step: 'email', email: 'other@example.com' }, {})).status, 200, 'another email');
-
-  env.SIGNIN_EMAIL_LIMIT = rateLimit(1000);
-  env.SIGNIN_IP_LIMIT = rateLimit(1);
-  assert.equal((await answerFrom({ step: 'email', email: 'pw-ip@example.com' })).status, 200);
-  const guess = await answerFrom({ step: 'password', email: 'pw-ip@example.com', value: 'x' });
-  assert.equal(guess.status, 429, 'password tries count against the IP too');
-  assert.match(await guess.text(), /Too many sign-in attempts.*type="password"/s, 'on the same step');
-  env.SIGNIN_IP_LIMIT = rateLimit(1000);
-});
-
-test('sign-in: a pending Continue (nonce script); an error stops the container; a late done is kept', async () => {
-  const s = await startSignIn();
-  const res = await answer(s, { step: 'email', email: 'pw-late@example.com' });
+  const res = await answer(s, { link: 'https://example.com/nope' });
   const nonce = /script-src 'nonce-([^']+)'/.exec(res.headers.get('content-security-policy') ?? '')?.[1];
   assert.ok(nonce, 'a nonce-based script-src');
   assert.match(res.headers.get('content-security-policy') ?? '', /frame-ancestors 'none'/);
   const html = await res.text();
   assert.ok(html.includes(`<script nonce="${nonce}">`), "the page's only script carries it");
   assert.match(html, /aria-busy.*Signing in…/);
-
-  const late = await answer(s, { step: 'password', email: 'pw-late@example.com', value: 'slow' });
-  assert.equal(late.status, 200);
-  const page = await late.text();
-  assert.match(page, /type="password"/, 'no answer in time: the same step again, not the email');
-  assert.match(page, /Submit again/);
-  const retry = await answer(s, { step: 'password', email: 'pw-late@example.com', value: 'slow' });
-  assert.equal(retry.status, 302, 'the resubmission gets the kept done');
-  assert.ok(location(retry).searchParams.get('code'));
-
-  const t = await startSignIn();
-  await answer(t, { step: 'email', email: 'nobody@example.com' });
-  assert.equal(env.PAPER_SIGNIN.objects.get(last('signin')[1])?.stopped, true, 'an error stops the container too');
+  assert.match(html, /Sign in with Paper/, 'the sign-in page again');
 });
 
 test('consent: the redirect host up front; DCR clients are unverified, CIMD clients show their host', async () => {
@@ -656,7 +600,7 @@ test('consent: the redirect host up front; DCR clients are unverified, CIMD clie
 });
 
 test('MCP: catalog cached per client; initialize warms the container; any session id; parse error', async () => {
-  const tok = await connect('pw-cache@example.com');
+  const tok = await connect();
   const init = (/** @type {string} */ name) =>
     rpc(tok.access_token, {
       id: 1,

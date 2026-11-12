@@ -7,7 +7,6 @@ import http from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { createBrowserEngine } from './browser.js';
 import { engineError, paperCookies, parseFileId } from './paper.js';
-import { createSignIn } from './signin.js';
 
 /** @typedef {import('./paper.js').Session} Session */
 /** @typedef {import('./paper.js').ClientInfo} ClientInfo */
@@ -53,7 +52,6 @@ const codeOf = (err) => err?.code;
  *     createLiteEngine(o: { session: Session, log: Log }): Promise<LiteEngine>,
  *   }>,
  *   createBrowser?: (o: { session: Session, log: Log }) => Promise<Engine>,
- *   signIn?: typeof createSignIn,
  *   log?: Log,
  *   browserIdleMs?: number,
  *   liteRetryMs?: number,
@@ -62,7 +60,6 @@ const codeOf = (err) => err?.code;
 export function createRuntime({
   loadLite = () => import('./lite.js'),
   createBrowser = createBrowserEngine,
-  signIn = createSignIn,
   log = defaultLog,
   browserIdleMs = 5 * 60_000,
   liteRetryMs = 60_000,
@@ -76,13 +73,12 @@ export function createRuntime({
   let liteRetryAt = 0;
   /** @type {Engine | null} */ let browser = null;
   /** @type {NodeJS.Timeout | undefined} */ let idleTimer;
-  /** @type {ReturnType<typeof signIn> | null} */ let job = null;
   /** Paper's tool list, for unknown-tool and fileId checks. @type {Catalog & { engine: 'lite' | 'browser' } | null} */
   let catalog = null;
   /** The file the engines last worked on: fills in a missing fileId so lite and browser agree. @type {string | null} */
   let currentFile = null;
 
-  // ponytail: one global queue (one account per container), so a sign-in or catalog waits behind a tool call.
+  // ponytail: one global queue (one account per container), so a catalog load waits behind a tool call.
   /** @type {Promise<unknown>} */
   let queue = Promise.resolve();
   /** @template T @param {() => Promise<T>} fn @returns {Promise<T>} */
@@ -239,22 +235,6 @@ export function createRuntime({
         if (!value?.isError) currentFile = parseFileId(args.fileId) ?? currentFile;
         return { result: value, engine };
       }),
-    '/signin/start': (body) =>
-      serial(async () => {
-        if (typeof body.email !== 'string' || !body.email.includes('@')) {
-          throw engineError('bad_request', '"email" is required.');
-        }
-        await job?.close();
-        job = signIn({ log });
-        return job.start(body.email.trim());
-      }),
-    // The job stays after 'done' or 'error': it answers a retried continue (done, for 60 s) or says to start again.
-    '/signin/continue': (body) =>
-      serial(async () => {
-        if (typeof body.value !== 'string' || !body.value) throw engineError('bad_request', '"value" is required.');
-        if (!job) throw engineError('bad_request', 'No sign-in in progress. Start again with your email.');
-        return job.continue(body.value);
-      }),
   };
 
   /** @param {http.IncomingMessage} req @returns {Promise<any>} */
@@ -313,7 +293,6 @@ export function createRuntime({
     server,
     async close() {
       server.close();
-      await job?.close();
       await closeEngines();
     },
   };

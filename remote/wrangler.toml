@@ -5,7 +5,7 @@ name = "paper-remote-mcp"
 main = "worker.js"
 compatibility_date = "2026-11-01"
 
-# max_instances are cost and capacity knobs: at most this many accounts active / sign-ins in progress at once.
+# max_instances is a cost and capacity knob: at most this many accounts active at once.
 # One container per active Paper account: Paper's MCP tools (runtime/server.js). Sleeps after 10 idle minutes.
 [[containers]]
 class_name = "PaperAccount"
@@ -13,35 +13,10 @@ image = "../runtime/Dockerfile"
 instance_type = "standard-1"
 max_instances = 50
 
-# One short-lived container per sign-in: drives Paper's sign-in page. Sleeps after 2 idle minutes.
-[[containers]]
-class_name = "PaperSignIn"
-image = "../runtime/Dockerfile"
-instance_type = "standard-1"
-max_instances = 25
-
-# Sign-in abuse limits (Workers Rate Limiting: approximate, per Cloudflare location; periods are 10 or 60 s only).
-# namespace_id: any integer unique within the account. Every sign-in step, per client IP:
-[[ratelimits]]
-name = "SIGNIN_IP_LIMIT"
-namespace_id = "25901"
-simple = { limit = 10, period = 60 }
-
-# Sign-in starts, per email (hashed). ponytail: 2 a minute, not 5 per 10 minutes (no longer periods); a Durable
-# Object counter if that matters.
-[[ratelimits]]
-name = "SIGNIN_EMAIL_LIMIT"
-namespace_id = "25902"
-simple = { limit = 2, period = 60 }
-
 [[durable_objects.bindings]]
 name = "PAPER_ACCOUNT"
 class_name = "PaperAccount"
 
-[[durable_objects.bindings]]
-name = "PAPER_SIGNIN"
-class_name = "PaperSignIn"
-
 [[migrations]]
 tag = "v1"
-new_sqlite_classes = ["PaperAccount", "PaperSignIn"]
+new_sqlite_classes = ["PaperAccount"]

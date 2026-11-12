@@ -58,9 +58,9 @@ function fakeEngine(name, session, behave = (/** @type {any} */ c, /** @type {Fa
  * Runtime on a random port with fake engines.
  * @param {import('node:test').TestContext} t
  * @param {{ liteBehave?: any, browserBehave?: any, liteBoot?: (n: number, s: any) => any,
- *   signIn?: any, browserIdleMs?: number, liteRetryMs?: number }} [o]
+ *   browserIdleMs?: number, liteRetryMs?: number }} [o]
  */
-async function start(t, { liteBehave, browserBehave, liteBoot, signIn, browserIdleMs, liteRetryMs } = {}) {
+async function start(t, { liteBehave, browserBehave, liteBoot, browserIdleMs, liteRetryMs } = {}) {
   /** @type {{ lite: Fake[], browser: Fake[] }} */
   const made = { lite: [], browser: [] };
   let boots = 0;
@@ -80,7 +80,6 @@ async function start(t, { liteBehave, browserBehave, liteBoot, signIn, browserId
       made.browser.push(e);
       return e;
     },
-    signIn,
     browserIdleMs,
     liteRetryMs,
   });
@@ -269,36 +268,13 @@ test('calls run one at a time', async (t) => {
   assert.equal(rt.made.browser.length, 1);
 });
 
-test('sign-in endpoints drive one step machine, which also answers a retried continue', async (t) => {
-  /** @type {string[][]} */
-  const seen = [];
-  const rt = await start(t, {
-    signIn: () => ({
-      async start(/** @type {string} */ email) {
-        seen.push(['start', email]);
-        return { step: 'password' };
-      },
-      async continue(/** @type {string} */ value) {
-        seen.push(['continue', value]);
-        return value === 'wrong'
-          ? { step: 'password', message: 'Incorrect password' }
-          : { step: 'done', session: S1, user: { id: 'user_1', email: 'a@b.c' } };
-      },
-      async close() {},
-    }),
-  });
-  assert.equal((await rt.post('/signin/continue', { value: 'x' })).status, 400);
-  assert.equal((await rt.post('/signin/start', {})).status, 400);
-  assert.deepEqual((await rt.post('/signin/start', { email: 'a@b.c' })).body, { step: 'password' });
-  assert.deepEqual((await rt.post('/signin/continue', { value: 'wrong' })).body, {
-    step: 'password',
-    message: 'Incorrect password',
-  });
-  const done = await rt.post('/signin/continue', { value: 'right' });
-  assert.equal(done.body.step, 'done');
-  assert.equal(done.body.user.id, 'user_1');
-  assert.equal((await rt.post('/signin/continue', { value: 'right' })).body.step, 'done');
-  assert.equal(seen.length, 4);
+test('no sign-in endpoints: sign-in is Paper OAuth on the Worker, not the container', async (t) => {
+  const rt = await start(t);
+  for (const path of ['/signin/start', '/signin/continue']) {
+    const res = await rt.post(path, {});
+    assert.equal(res.status, 404, path);
+    assert.equal(res.body.error.code, 'bad_request', path);
+  }
 });
 
 test('rejects bodies over 4 MB and bad JSON', async (t) => {
