@@ -62,6 +62,17 @@ npx wrangler deploy
 
 Optional `PUBLIC_URL`: set it when a proxy in front changes the origin the Worker sees (e.g. a tunnel). Local dev, containers included (Docker runs them): put `SEAL_KEY=…` in `remote/.dev.vars`, then `npm run remote:dev`. Run the tests with `npm test`.
 
+**Single-tenant VM (any Docker host, free):** `Dockerfile.deploy` packs the same server with a small Node front (`remote/node.js`, in-process runtime — one Paper account per process) instead of Cloudflare's Worker/containers:
+
+```bash
+docker build -f Dockerfile.deploy -t paper-remote-mcp .
+docker run -d --restart=always -p 127.0.0.1:8081:8080 \
+  -e SEAL_KEY=$(openssl rand -base64 32) -e PUBLIC_URL=https://paper.example.com \
+  paper-remote-mcp
+```
+
+Put your reverse proxy (TLS) in front, pointing `paper.example.com` at the port. Multi-user hosting is the Cloudflare deployment above, not this.
+
 The local `npx` server below is still the way to drive the editor directly (and the open file) from your own machine.
 
 ## Requirements
