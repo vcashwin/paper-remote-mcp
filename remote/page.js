@@ -6,8 +6,8 @@ import { CSS } from './style.js';
 /** @param {string} value */
 const escape = (value) => value.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
-// Our own mark (a folded sheet), not Paper's logo: this server is not Paper's.
-const MARK = `<svg width="56" height="56" viewBox="0 0 56 56" role="img" aria-label="Paper Remote MCP"><rect width="56" height="56" rx="12" fill="var(--color-control-primary)"/><path d="M19 14h13l8 8v20H19z" fill="var(--color-control-primary-label)" opacity=".92"/><path d="M32 14v8h8z" fill="var(--color-control-primary)" opacity=".55"/></svg>`;
+// Paper's own app icon, hot-linked like the client logos on the consent page (no-referrer pages; chosen by the owner).
+const MARK = `<img src="https://paper.design/logos/app-icons/Paper%20App%20Icon%20512.png" alt="Paper">`;
 const ARROWS = `<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" class="_icon_5lfxx_2" style="--icon-default-color: var(--color-label-muted);"><path d="M5.378 7.5a.6.6 0 0 1 .6.6l-.002 1.774c2.375.224 8.027.917 8.027 1.328 0 .311-2.675.796-8.024 1.453l-.001 1.747a.6.6 0 0 1-.992.454L1.14 11.548a.4.4 0 0 1 0-.607l3.848-3.297a.6.6 0 0 1 .39-.144Zm4.79-6.291a.6.6 0 0 1 .846-.064l3.847 3.309a.4.4 0 0 1 0 .607l-3.848 3.296a.6.6 0 0 1-.99-.455V6.128C7.65 5.904 1.998 5.21 1.998 4.799c0-.31 2.675-.795 8.024-1.452l.001-1.747a.6.6 0 0 1 .145-.391Z"/></svg>`;
 const PLACEHOLDER = `<svg width="56" height="56" viewBox="0 0 48 48" aria-hidden="true"><g stroke="var(--color-bg-border)" stroke-width="0.5" fill="none"><rect width="48" height="48" fill="var(--color-bg-shade)" stroke="none"/><path d="M24 0V48M33 0V48M15 0V48M0 24H48M0 33H48M0 15H48M48 0L0 48M0 0L48 48"/><circle cx="24" cy="24" r="18"/><circle cx="24" cy="24" r="13"/></g></svg>`;
 // Additions on the same tokens: the landing page's code line and list, the sign-in page's field, steps and error line.
