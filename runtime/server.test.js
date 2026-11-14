@@ -58,9 +58,9 @@ function fakeEngine(name, session, behave = (/** @type {any} */ c, /** @type {Fa
  * Runtime on a random port with fake engines.
  * @param {import('node:test').TestContext} t
  * @param {{ liteBehave?: any, browserBehave?: any, liteBoot?: (n: number, s: any) => any,
- *   browserIdleMs?: number, liteRetryMs?: number }} [o]
+ *   browserIdleMs?: number, liteRetryMs?: number, liteMaxAgeMs?: number }} [o]
  */
-async function start(t, { liteBehave, browserBehave, liteBoot, browserIdleMs, liteRetryMs } = {}) {
+async function start(t, { liteBehave, browserBehave, liteBoot, browserIdleMs, liteRetryMs, liteMaxAgeMs } = {}) {
   /** @type {{ lite: Fake[], browser: Fake[] }} */
   const made = { lite: [], browser: [] };
   let boots = 0;
@@ -82,6 +82,7 @@ async function start(t, { liteBehave, browserBehave, liteBoot, browserIdleMs, li
     },
     browserIdleMs,
     liteRetryMs,
+    liteMaxAgeMs,
   });
   await new Promise((r) => runtime.server.listen(0, () => r(null)));
   const url = `http://127.0.0.1:${/** @type {import('node:net').AddressInfo} */ (runtime.server.address()).port}`;
@@ -266,6 +267,16 @@ test('calls run one at a time', async (t) => {
   await Promise.all([1, 2, 3, 4].map(() => rt.call('export')));
   assert.equal(max, 1);
   assert.equal(rt.made.browser.length, 1);
+});
+
+test('the lite engine is recycled after liteMaxAgeMs (day-long children abort mid-call)', async (t) => {
+  const rt = await start(t, { liteMaxAgeMs: 60 });
+  await rt.call('get_basic_info');
+  assert.equal(rt.made.lite.length, 1);
+  await new Promise((r) => setTimeout(r, 90));
+  await rt.call('get_basic_info');
+  assert.equal(rt.made.lite.length, 2, 'a fresh engine boots past the age cap');
+  assert.equal(rt.made.lite[0].closed, true, 'and the old one is closed');
 });
 
 test('no sign-in endpoints: sign-in is Paper OAuth on the Worker, not the container', async (t) => {

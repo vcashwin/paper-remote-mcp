@@ -55,6 +55,7 @@ const codeOf = (err) => err?.code;
  *   log?: Log,
  *   browserIdleMs?: number,
  *   liteRetryMs?: number,
+ *   liteMaxAgeMs?: number,
  * }} [options]
  */
 export function createRuntime({
@@ -63,6 +64,7 @@ export function createRuntime({
   log = defaultLog,
   browserIdleMs = 5 * 60_000,
   liteRetryMs = 60_000,
+  liteMaxAgeMs = 3_600_000,
 } = {}) {
   /** The latest caller's session: boots engines, never replaces a running one. @type {Session} */
   let incoming = { cookies: [] };
@@ -71,6 +73,8 @@ export function createRuntime({
   /** @type {LiteEngine | null} */ let lite = null;
   /** No lite boot before this time (a failed boot backs off; Infinity when the module can't load). */
   let liteRetryAt = 0;
+  /** When the current lite engine booted; recycled after liteMaxAgeMs. */
+  let liteBootedAt = 0;
   /** @type {Engine | null} */ let browser = null;
   /** @type {NodeJS.Timeout | undefined} */ let idleTimer;
   /** Paper's tool list, for unknown-tool and fileId checks. @type {Catalog & { engine: 'lite' | 'browser' } | null} */
@@ -129,12 +133,19 @@ export function createRuntime({
       log.info('lite: replacing engine (Paper wants a newer client, or it crashed or timed out)');
       await closeLite();
     }
+    // Paper's app in the child grows over days (draw-loop and sync-socket churn) and eventually aborts mid-call
+    // (SIGABRT); recycle on a schedule while a fresh boot is still seconds. Current file re-opens on the next call.
+    if (lite && Date.now() - liteBootedAt > liteMaxAgeMs) {
+      log.info(`lite: recycling engine after ${Math.round((Date.now() - liteBootedAt) / 60_000)}min`);
+      await closeLite();
+    }
     if (lite) return lite;
     const liteExports = await loadModule();
     if (!liteExports || Date.now() < liteRetryAt) return null;
     const started = Date.now();
     try {
       lite = await liteExports.createLiteEngine({ session: incoming, log });
+      liteBootedAt = Date.now();
       catalog = null; // a fresh bundle may be a newer Paper release
       log.info(`lite: ready in ${Date.now() - started}ms`);
     } catch (err) {
@@ -299,7 +310,9 @@ export function createRuntime({
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
-  const runtime = createRuntime();
+  const runtime = createRuntime({
+    ...(process.env.LITE_MAX_AGE_MS && { liteMaxAgeMs: Number(process.env.LITE_MAX_AGE_MS) }),
+  });
   const port = Number(process.env.PORT || 8080);
   runtime.server.listen(port, () => defaultLog.info(`runtime listening on :${port}`));
   for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => runtime.close().finally(() => process.exit(0)));
