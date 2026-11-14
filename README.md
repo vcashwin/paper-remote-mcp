@@ -1,68 +1,39 @@
 # paper-remote-mcp
 
-Run [Paper](https://paper.design)'s MCP server without the desktop app.
+Run [Paper](https://paper.design)'s MCP server without the desktop app — hosted, or on your own machine.
 
 ![paper-remote-mcp — Paper's MCP, without the app.](./.github/banner.svg)
 
-`paper-remote-mcp` loads the Paper editor in a headless browser, signed in as you, and exposes the same tools Paper Desktop does (`write_html`, `get_screenshot`, `get_jsx`, `create_file`, …) over stdio. It works with Claude Code, Cursor, Codex, or any MCP client.
+## Connect to a hosted server
 
 ```bash
-npx paper-remote-mcp login    # one-time OAuth sign-in
-npx paper-remote-mcp doctor   # check browser, sign-in, tools
-claude mcp add paper -- npx -y paper-remote-mcp mcp
+claude mcp add --transport http paper https://<your-server>/mcp
 ```
 
-> Community project. Not affiliated with or endorsed by Paper.
+![Consent page](./.github/consent.png)
 
-## Remote server (OAuth, nothing to install)
+![Sign in with Paper](./.github/sign-in-paper.png)
 
-`remote/` is a hosted way in: one URL, OAuth in the browser, nothing to install. A Cloudflare Worker is the OAuth front door and the MCP endpoint; Paper's own MCP tools run in a container per active Paper account (`runtime/`, see [docs/remote-runtime.md](docs/remote-runtime.md)). Signing in is Paper's own OAuth (the same flow Paper Desktop uses): our page opens Paper's hosted sign-in, and you paste back the one-time link Paper shows afterwards — your Paper password never touches this server. The pages use Linefold's design system.
+### How signing in works
 
-```bash
-claude mcp add --transport http paper https://<your-worker>/mcp
-```
+1. Your client opens the consent page → **Continue**.
+2. **Open Paper sign-in** — sign in on Paper's own page, as usual.
+3. Paper shows an **Opening Paper…** page. Copy its address from the address bar (⌘L ⌘C) and paste it back.
+4. Done — your client gets a token and stays connected (it refreshes itself).
 
-```
-  MCP client ──OAuth 2.1 (DCR or CIMD, PKCE)──► remote/worker.js (Cloudflare Worker)
-      │                                            │ consent → sign-in page
-      │                                            ▼
-      │                                Paper's hosted sign-in (OAuth, PKCE) ─► paste link ─► session cookies
-      │
-      └──── /mcp, Bearer <sealed session> ─► Worker ─► PaperAccount DO (per Paper user) ─► container: Paper's tools
-```
+No Paper password or emailed code ever touches the server. The link you paste is a one-time code, exchanged with Paper over PKCE — the same flow Paper Desktop uses.
 
-**Nothing is stored on the server.** There is no database, KV, or log of tokens. Everything the Worker hands out is AES-256-GCM ciphertext under one secret (`SEAL_KEY`), sealed for a single purpose, and it carries its own state:
+## What's true of the server
 
-| What the client holds | Inside (encrypted)                                     | Lives                    |
-| --------------------- | ------------------------------------------------------ | ------------------------ |
-| `client_id` (DCR)     | its redirect URIs, name, logo                          | until `SEAL_KEY` changes |
-| authorization `code`  | Paper session cookies, user, the client's PKCE request | 60 s                     |
-| `access_token`        | Paper session cookies, user id, grant id               | 1 h                      |
-| `refresh_token`       | the same, plus the client id                           | 30 days                  |
+- **Nothing is stored.** No database, no token logs. Everything handed out is AES-256-GCM ciphertext under one `SEAL_KEY`; the session travels inside the client's tokens (~3 KB).
+- **Refreshes are automatic.** Access tokens live 1 h, refresh tokens 30 days; every refresh asks Paper you're still signed in and folds in Paper's cookie renewals.
+- **Revoking = signing out in Paper.** Takes effect within the hour.
+- Tools run Paper's own live bundle: a lite engine for most calls, Chromium only for the ~8 layout tools (screenshot, export, computed styles, …).
+- Paper's meter is mocked in the container: `/meter/balance` answers full (`mcpCap: 10000`) and `/meter/record-mcp` is dropped — the weekly-limit gate never trips.
 
-A Paper session is the cookies Paper's sign-in sets for its app on `paper.design` (the filter is `paperCookies` in `runtime/paper.js`). Tokens are compressed before sealing, about 3 KB each. Each request uses only the session sealed in its own token: the account's Durable Object passes it to its container, one call at a time, and remembers nothing. Every refresh asks Paper (`/auth/me`) whether that session is still signed in: if not, the client must sign in again; if so, the cookie renewals Paper sends back go into the new tokens. If Paper can't be reached, the refresh fails with 503 and the refresh token stays valid. Initialize and `tools/list` answer from a per-client catalog cache (1 h) while the account's container starts in the background; a container sleeps after 10 idle minutes.
+## Host it yourself
 
-**Trust: read this before you deploy or connect.**
-
-- **Sign-in happens on Paper's own page, never this server.** You authenticate with Paper directly (its hosted OAuth, the same client Paper Desktop uses); afterwards Paper shows an "Opening Paper…" page and you paste its one-time link back. The server exchanges that link with Paper (PKCE) for the session — your Paper password and emailed codes never touch it. Still, only connect to an instance you (or someone you trust) deployed, and check the URL: the consent page shows where the client's code goes and marks clients that registered themselves (DCR) as unverified.
-- **Every token carries a live Paper session**, sealed under `SEAL_KEY`. Whoever has `SEAL_KEY` and a token can act as you in Paper. A leaked `SEAL_KEY` exposes every session in every outstanding token until its refresh token expires (30 days) or the user signs out in Paper; rotating it signs everyone out.
-- **Revoking = signing out in Paper.** There is no server-side revocation (nothing is stored); an access token keeps working until it expires, so a sign-out takes effect within an hour. Removing the server from your client just drops its tokens.
-- While an account is active, its container holds the Paper session in memory (never on disk or in storage).
-- A code can be replayed within its 60 s, but it is useless without the client's PKCE verifier.
-- Sign-in rides Paper Desktop's public OAuth client; if Paper rotates it or tightens the exchange, sign-in breaks until the flow is re-extracted. Containers are capped by `max_instances` in `remote/wrangler.toml` (cost and capacity knobs).
-
-**Deploy** (needs **Workers Paid** for Containers, and Docker running: wrangler builds the image from `runtime/Dockerfile`):
-
-```bash
-cd remote
-npm install                           # @cloudflare/containers
-npx wrangler secret put SEAL_KEY      # paste: openssl rand -base64 32
-npx wrangler deploy
-```
-
-Optional `PUBLIC_URL`: set it when a proxy in front changes the origin the Worker sees (e.g. a tunnel). Local dev, containers included (Docker runs them): put `SEAL_KEY=…` in `remote/.dev.vars`, then `npm run remote:dev`. Run the tests with `npm test`.
-
-**Single-tenant VM (any Docker host, free):** `Dockerfile.deploy` packs the same server with a small Node front (`remote/node.js`, in-process runtime — one Paper account per process) instead of Cloudflare's Worker/containers:
+**Any Docker VM** (free; one Paper account per server):
 
 ```bash
 docker build -f Dockerfile.deploy -t paper-remote-mcp .
@@ -71,106 +42,48 @@ docker run -d --restart=always -p 127.0.0.1:8081:8080 \
   paper-remote-mcp
 ```
 
-Put your reverse proxy (TLS) in front, pointing `paper.example.com` at the port. Multi-user hosting is the Cloudflare deployment above, not this.
+Put your reverse proxy or tunnel (TLS) in front at `paper.example.com`. One Paper account per server — for you, or each teammate's own.
 
-The local `npx` server below is still the way to drive the editor directly (and the open file) from your own machine.
-
-## Requirements
-
-- Node 20+
-- Google Chrome, or Playwright's Chromium (`npx playwright install chromium`)
-
-## Setup
-
-**1. Sign in.** `npx paper-remote-mcp login` opens a browser window at `app.paper.design`. Sign in as usual; the session is saved to `~/.paper-mcp/profiles/production/` and reused headlessly.
-
-**2. Verify.**
-
-```
-$ npx paper-remote-mcp doctor
-browser        ✓ launched
-sign-in        ✓ authenticated (Paper API /auth/me → 200)
-handlers       ✓ 36 tools available
-```
-
-**3. Add it to your agent.**
-
-<details open>
-<summary>Claude Code</summary>
+**Cloudflare** (multi-user): needs Workers Paid for Containers.
 
 ```bash
+cd remote && npm install
+npx wrangler secret put SEAL_KEY   # openssl rand -base64 32
+npx wrangler deploy
+```
+
+Architecture and contract: [docs/remote-runtime.md](docs/remote-runtime.md).
+
+## Or run it locally
+
+```bash
+npx paper-remote-mcp login    # one-time sign-in in a browser window
+npx paper-remote-mcp doctor   # browser ✓ sign-in ✓ tools ✓
 claude mcp add paper -- npx -y paper-remote-mcp mcp
 ```
 
-</details>
+Other clients, same idea:
 
-<details>
-<summary>Cursor — <code>~/.cursor/mcp.json</code></summary>
+- **Cursor** — `~/.cursor/mcp.json`: `{ "mcpServers": { "paper": { "command": "npx", "args": ["-y", "paper-remote-mcp", "mcp"] } } }`
+- **Codex** — `~/.codex/config.toml`: `[mcp_servers.paper]` with `command = "npx"`, `args = ["-y", "paper-remote-mcp", "mcp"]`
+- **VS Code** — `.vscode/mcp.json`: `{ "servers": { "paper": { "type": "stdio", "command": "npx", "args": ["-y", "paper-remote-mcp", "mcp"] } } }`
 
-```json
-{ "mcpServers": { "paper": { "command": "npx", "args": ["-y", "paper-remote-mcp", "mcp"] } } }
-```
+| Command           | What it does                                              |
+| ----------------- | --------------------------------------------------------- |
+| `mcp` _(default)_ | Start the stdio MCP server backed by a headless editor.   |
+| `login`/`logout`  | Sign in, or delete the saved session.                     |
+| `doctor`          | Check Node, browser, sign-in, and tool availability.      |
+| `relay`           | Forward stdio to a _running_ Paper Desktop (no CLI needed). |
 
-</details>
+Handy flags: `--file <id|url>` (open a file on start), `--env staging`, `--profile <dir>`, `--headful`.
 
-<details>
-<summary>Codex — <code>~/.codex/config.toml</code></summary>
+The local server injects a no-op `navigator.modelContext` so Paper builds its real tool handlers in a headless Chrome page, then maps `tools/list`/`tools/call` onto them. The tool list comes from Paper itself, so it tracks Paper's updates.
 
-```toml
-[mcp_servers.paper]
-command = "npx"
-args = ["-y", "paper-remote-mcp", "mcp"]
-```
+### Local notes
 
-</details>
-
-<details>
-<summary>VS Code — <code>.vscode/mcp.json</code></summary>
-
-```json
-{ "servers": { "paper": { "type": "stdio", "command": "npx", "args": ["-y", "paper-remote-mcp", "mcp"] } } }
-```
-
-</details>
-
-To open a specific file on start, append `--file <fileId-or-url>` to the args.
-
-## Commands
-
-| Command            | What it does                                              |
-| ------------------ | --------------------------------------------------------- |
-| `mcp` _(default)_  | Start the stdio MCP server backed by a headless editor.   |
-| `login` / `logout` | Sign in, or delete the saved session.                     |
-| `doctor`           | Check Node, browser, sign-in, and tool availability.      |
-| `relay`            | Forward stdio to a _running_ Paper Desktop (no CLI binary needed). |
-
-| Flag               | Meaning                                     |
-| ------------------ | ------------------------------------------- |
-| `--file <id\|url>` | File to open and use as the default target. |
-| `--env <name>`     | `production` (default) or `staging`.        |
-| `--profile <dir>`  | Override the session directory.             |
-| `--headful`        | Show the browser window.                    |
-
-Env vars: `PAPER_MCP_ENV`, `PAPER_MCP_PROFILE`, `PAPER_MCP_LOG` (`silent|error|warn|info|debug`).
-
-## How it works
-
-Paper Desktop's MCP server is a thin proxy: every tool call runs against `window.mcpHandlers` inside the editor page. Paper only builds those handlers in the desktop shell or in a browser that supports WebMCP.
-
-`paper-remote-mcp` injects a no-op `navigator.modelContext` before the page loads. Paper then builds its real handlers and keeps using normal cookie auth. The stdio server maps `tools/list` to `getMCPServerConfig()` and `tools/call` to `handleToolCall()`, and navigates to another file when a tool call names a different `fileId`. The tool list and instructions come from Paper itself, so they stay in sync with Paper's updates.
-
-## Limitations
-
-- One file is open at a time; switching files costs a page reload.
-- The headless browser takes a few seconds to start and uses a few hundred MB of RAM.
-- It depends on Paper's web internals. If Paper changes them, `doctor` will report it.
-- It uses its own Chrome profile, not your everyday one: Chrome locks a profile to one process and blocks automation of the default profile.
-
-## Troubleshooting
-
-- **"Profile is in use by another browser":** your agent is already running the server. Quit it, or pass a different `--profile`.
-- **Not signed in after `login`:** run `login` again and wait for `✓ Signed in`. If Google sign-in is refused, use **Continue with email**.
-- **Switch accounts:** `logout`, then `login`.
+- One file open at a time; switching files costs a page reload.
+- It uses its own Chrome profile (Chrome locks one profile per process), saved under `~/.paper-mcp/profiles/`.
+- It depends on Paper's web internals; if Paper changes them, `doctor` will say so.
 
 ## Programmatic API
 
@@ -187,31 +100,9 @@ await host.close();
 
 ```bash
 git clone https://github.com/vcashwin/paper-remote-mcp && cd paper-remote-mcp
-npm install
-node src/cli.js login     # one-time sign-in (skip if already signed in)
-node src/cli.js doctor    # browser ✓, sign-in ✓, 36 tools ✓
-npm run typecheck
+npm install && node src/cli.js doctor
+npm test && npm run typecheck   # worker tests; typecheck incl. runtime/
+node --test runtime/server.test.js runtime/lite.test.js
 ```
 
-Point your agent at the local checkout so code changes apply on the next server start:
-
-```bash
-# Claude Code (user scope = every project)
-claude mcp add -s user paper-remote -- node "$PWD/src/cli.js" mcp
-claude mcp get paper-remote          # should show ✔ Connected
-
-# Codex
-codex mcp add paper-remote -- node "$PWD/src/cli.js" mcp
-```
-
-Or for Codex, add this to `~/.codex/config.toml`:
-
-```toml
-[mcp_servers.paper-remote]
-command = "node"
-args = ["/absolute/path/to/paper-remote-mcp/src/cli.js", "mcp"]
-```
-
-Only one server can use a profile at a time. To run Claude and Codex together, give one its own with `--profile ~/.paper-mcp/codex` (and run `login` with that profile once).
-
-MIT © vcashwin
+> Community project. Not affiliated with or endorsed by Paper. MIT © vcashwin
